@@ -1,0 +1,27 @@
+# File Sync Checker - 設定ファイルサンプル
+# 実環境用は config.yaml にコピーして書き換えてください。
+
+locations:
+  - name: "拠点A"
+    path: "//server-a/share/docs"
+  - name: "拠点B"
+    path: "//server-b/share/docs"
+  - name: "拠点C"
+    path: "//server-c/share/docs"
+
+# 除外パターン (glob)。ファイル名・ディレクトリ名どちらにもマッチします。
+exclude_patterns:
+  - "~$*"        # Office 一時ファイル
+  - "*.tmp"
+  - "Thumbs.db"
+  - ".DS_Store"
+  - "*.lnk"
+
+output:
+  # excel / html / both
+  format: "excel"
+  output_dir: "./reports"
+
+performance:
+  parallel_workers: 4
+  hash_algorithm: "sha256"
