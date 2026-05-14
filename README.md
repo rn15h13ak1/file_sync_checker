@@ -24,7 +24,18 @@ python main.py --no-progress      # 進捗バーを抑制
 python main.py -v                 # 詳細ログ
 ```
 
-レポートは `reports/sync-check-YYYYMMDD-HHMMSS.{xlsx,html}` に出力されます。
+CWD に依存せずフルパスで起動することもできます:
+
+```bash
+python /full/path/to/main.py -c /full/path/to/config.yaml
+```
+
+### パス解決ルール
+
+- `-c` 省略時の既定 `config.yaml` は **CWD → main.py と同じディレクトリ** の順で探索。
+- `config.yaml` 内の相対パス (`locations[].path`, `output.output_dir`) は **config ファイルのあるディレクトリ** からの相対として解決されます。絶対パスはそのまま使用されます。
+
+レポートは `<output_dir>/sync-check-YYYYMMDD-HHMMSS.{xlsx,html}` に出力されます。
 
 ### 終了コード
 

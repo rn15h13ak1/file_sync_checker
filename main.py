@@ -13,17 +13,32 @@ from scanner import scan_location
 from utils import ensure_dir, human_bytes, setup_logging, timestamp_slug
 
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="3拠点（以上）のファイル同期状況をチェックして Excel/HTML レポートを生成します。"
     )
     parser.add_argument(
-        "-c", "--config", default="config.yaml",
-        help="設定ファイルのパス (default: config.yaml)",
+        "-c", "--config", default=None,
+        help="設定ファイルのパス (default: ./config.yaml またはスクリプトと同じディレクトリの config.yaml)",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="詳細ログを出力")
     parser.add_argument("--no-progress", action="store_true", help="進捗バーを無効化")
     return parser.parse_args()
+
+
+def _resolve_default_config() -> Path:
+    """`-c` 省略時の config.yaml を CWD → スクリプト同梱の順で探す。"""
+    cwd_candidate = Path.cwd() / "config.yaml"
+    if cwd_candidate.is_file():
+        return cwd_candidate
+    script_candidate = SCRIPT_DIR / "config.yaml"
+    if script_candidate.is_file():
+        return script_candidate
+    # どちらも無い場合は CWD を返す (load_config 側でエラーメッセージにする)
+    return cwd_candidate
 
 
 def run(config: Config, config_path: Path, *, show_progress: bool, log) -> int:
@@ -110,7 +125,7 @@ def run(config: Config, config_path: Path, *, show_progress: bool, log) -> int:
 def main() -> int:
     args = parse_args()
     log = setup_logging(verbose=args.verbose)
-    config_path = Path(args.config)
+    config_path = Path(args.config) if args.config else _resolve_default_config()
     try:
         config = load_config(config_path)
     except ConfigError as e:

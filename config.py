@@ -44,10 +44,17 @@ class ConfigError(ValueError):
     pass
 
 
+def _resolve(p: Path, base: Path) -> Path:
+    """相対パスは base からの相対として解決し、絶対パスはそのまま返す。"""
+    return p if p.is_absolute() else (base / p).resolve()
+
+
 def load_config(path: str | Path) -> Config:
-    config_path = Path(path)
+    config_path = Path(path).resolve()
     if not config_path.is_file():
         raise ConfigError(f"設定ファイルが見つかりません: {config_path}")
+
+    base_dir = config_path.parent
 
     with config_path.open("r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
@@ -68,7 +75,7 @@ def load_config(path: str | Path) -> Config:
         if name in seen_names:
             raise ConfigError(f"拠点名が重複しています: {name}")
         seen_names.add(name)
-        locations.append(Location(name=str(name), path=Path(str(path))))
+        locations.append(Location(name=str(name), path=_resolve(Path(str(path)), base_dir)))
 
     if len(locations) < 2:
         raise ConfigError("locations は2件以上必要です")
@@ -84,7 +91,7 @@ def load_config(path: str | Path) -> Config:
         raise ConfigError(
             f"output.format は {sorted(SUPPORTED_FORMATS)} のいずれかを指定してください (現在: {fmt})"
         )
-    output_dir = Path(str(output_raw.get("output_dir", "./reports")))
+    output_dir = _resolve(Path(str(output_raw.get("output_dir", "./reports"))), base_dir)
     output = OutputConfig(format=fmt, output_dir=output_dir)
 
     perf_raw = raw.get("performance") or {}
