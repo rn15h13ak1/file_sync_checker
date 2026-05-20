@@ -465,20 +465,34 @@ tr.file-row .expand-indicator {
 }
 tr.file-row.expanded .expand-indicator { transform: rotate(90deg); }
 tr.detail-row > td { padding: 0 !important; background: #f9fafe !important; }
-.detail-panel { padding: 12px 24px; }
+/* 詳細パネルは viewport 幅以内に収め、内部テーブルが拡がりすぎないようにする。
+   メインテーブルが横にスクロールされた場合は通常通りパネルも一緒にスクロールする
+   (table 内での position:sticky はブラウザ実装が不安定なため非採用)。 */
+.detail-panel {
+  padding: 12px 24px;
+  max-width: calc(100vw - 80px);
+  box-sizing: border-box;
+}
 .detail-panel h4 {
   margin: 8px 0 4px; font-size: 0.85rem; color: #305496;
   border-bottom: 1px solid #d6deeb; padding-bottom: 2px;
 }
-.detail-table { width: auto; min-width: 50%; margin-bottom: 8px; font-size: 0.8rem; }
-.detail-table thead th { position: static; }
-.detail-table td, .detail-table th {
-  white-space: normal; max-width: none; padding: 4px 8px;
+.detail-table { width: 100%; max-width: 960px; margin-bottom: 8px; font-size: 0.8rem; }
+.detail-table thead th { position: static; white-space: nowrap; }
+.detail-table td, .detail-table th { max-width: none; padding: 4px 8px; }
+.detail-table td { white-space: nowrap; }
+/* ファイルパス・SHA-256 など長くなる列のみ折り返しを許可 */
+.detail-table .path-cell, .detail-table .hash-cell {
+  white-space: normal; overflow-wrap: anywhere; word-break: break-all;
 }
+/* ファイルパス列を最も広く、操作列はボタンに合わせて最小幅で */
+.detail-table.detail-paths .path-cell { width: 100%; }
+.detail-table.detail-paths .action-cell { white-space: nowrap; width: 1%; }
 .detail-table code {
   background: #f4f4f8; padding: 2px 6px; border-radius: 3px;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 0.78rem; word-break: break-all; user-select: all;
+  font-size: 0.78rem; word-break: break-all; overflow-wrap: anywhere;
+  user-select: all; display: inline-block; max-width: 100%;
 }
 .detail-table .muted { color: #888; font-style: italic; }
 button[data-copy], button[data-action] {
@@ -651,13 +665,13 @@ def _render_detail_row(
             status_html = f"<td class='muted'>欠落</td>"
         else:
             status_html = f"<td>あり</td>"
+        # フォルダパスは「📁 フォルダ」ボタンの data-copy に格納する (列としては非表示)
         path_rows.append(
             "<tr>"
             f"<td>{html.escape(loc)}</td>"
             f"{status_html}"
-            f"<td><code>{html.escape(full)}</code></td>"
-            f"<td><code>{html.escape(folder)}</code></td>"
-            f"<td>"
+            f"<td class='path-cell'><code>{html.escape(full)}</code></td>"
+            f"<td class='action-cell'>"
             f"<button type='button' data-copy=\"{html.escape(full, quote=True)}\" "
             f"title='ファイルのフルパスをコピー'>📋 ファイル</button>"
             f"<button type='button' data-copy=\"{html.escape(folder, quote=True)}\" "
@@ -690,9 +704,9 @@ def _render_detail_row(
             hash_rows.append(
                 "<tr>"
                 f"<td>{html.escape(loc)}</td>"
-                f"<td><code>{html.escape(entry.hash)}</code></td>"
+                f"<td class='hash-cell'><code>{html.escape(entry.hash)}</code></td>"
                 f"<td class='num'>{entry.size:,} B</td>"
-                f"<td><button type='button' data-copy=\"{html.escape(entry.hash, quote=True)}\" "
+                f"<td class='action-cell'><button type='button' data-copy=\"{html.escape(entry.hash, quote=True)}\" "
                 f"title='SHA-256 フル値をコピー'>📋 ハッシュ</button></td>"
                 "</tr>"
             )
@@ -701,8 +715,8 @@ def _render_detail_row(
         f'<tr class="detail-row" hidden><td colspan="{colspan}">'
         f'<div class="detail-panel">'
         f'<h4>パス情報</h4>'
-        f'<table class="detail-table">'
-        f'<thead><tr><th>拠点</th><th>状態</th><th>ファイルパス</th><th>フォルダパス</th><th>操作</th></tr></thead>'
+        f'<table class="detail-table detail-paths">'
+        f'<thead><tr><th>拠点</th><th>状態</th><th>ファイルパス</th><th>操作</th></tr></thead>'
         f'<tbody>{"".join(path_rows)}</tbody>'
         f'</table>'
         f'<h4>ハッシュ詳細 (SHA-256 フル値)</h4>'

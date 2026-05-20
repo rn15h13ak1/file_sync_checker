@@ -431,8 +431,37 @@ class TestHtml:
         """
         out = write_html(rich_ctx, tmp_path / "out.html")
         body = out.read_text(encoding="utf-8")
-        assert 'data-copy="/tmp/dummy/mismatch.txt"' in body
-        assert 'data-copy="/tmp/dummy"' in body  # フォルダパス
+        assert 'data-copy="/tmp/dummy/mismatch.txt"' in body  # ファイル
+        assert 'data-copy="/tmp/dummy"' in body  # フォルダ (ボタンには残す)
+
+    def test_detail_path_table_omits_folder_column(
+        self, rich_ctx: ReportContext, tmp_path: Path
+    ):
+        """フォルダパス列は廃止 (ボタンには残るが列としては表示しない)。"""
+        out = write_html(rich_ctx, tmp_path / "out.html")
+        body = out.read_text(encoding="utf-8")
+        # ヘッダの「フォルダパス」列が無い
+        assert "<th>フォルダパス</th>" not in body
+        # ファイルパス列は残っている
+        assert "<th>ファイルパス</th>" in body
+
+    def test_detail_panel_constrained_to_viewport_width(
+        self, rich_ctx: ReportContext, tmp_path: Path
+    ):
+        """詳細パネルが viewport を超えないよう max-width を持つ。"""
+        out = write_html(rich_ctx, tmp_path / "out.html")
+        body = out.read_text(encoding="utf-8")
+        assert "max-width: calc(100vw" in body
+
+    def test_long_path_wraps_in_detail_table(
+        self, rich_ctx: ReportContext, tmp_path: Path
+    ):
+        """ファイルパス列は折り返し有効、拠点/状態列は nowrap。"""
+        out = write_html(rich_ctx, tmp_path / "out.html")
+        body = out.read_text(encoding="utf-8")
+        # 折り返しを許可する列クラス
+        assert ".detail-table .path-cell" in body
+        assert "overflow-wrap: anywhere" in body
 
     def test_clipboard_script_with_fallback_present(
         self, rich_ctx: ReportContext, tmp_path: Path
