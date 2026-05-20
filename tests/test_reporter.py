@@ -302,6 +302,44 @@ class TestHtml:
         assert "PermissionError" in body
         assert "cell-error" in body
 
+    def test_sticky_column_has_explicit_background(
+        self, rich_ctx: ReportContext, tmp_path: Path
+    ):
+        """Issue 1: 横スクロール時に sticky 列が透明になる問題が再発しないこと。
+
+        - background: inherit を使っていない
+        - thead 側に明示的な背景色
+        - tbody の odd/even 両方に明示的な背景色
+        """
+        out = write_html(rich_ctx, tmp_path / "out.html")
+        body = out.read_text(encoding="utf-8")
+        assert "background: inherit" not in body, (
+            "sticky 列に background: inherit を使うと透明になる。明示的な色を指定すること"
+        )
+        # thead 側
+        assert ".fixed-col-table thead th:nth-child(2)" in body
+        # tbody 側の odd/even
+        assert ".fixed-col-table tbody tr:nth-child(odd) td:nth-child(2)" in body
+        assert ".fixed-col-table tbody tr:nth-child(even) td:nth-child(2)" in body
+
+    def test_page_header_is_not_sticky(
+        self, rich_ctx: ReportContext, tmp_path: Path
+    ):
+        """Issue 2: ページヘッダーを sticky にするとテーブル列ヘッダーと衝突するため、
+        ページヘッダー側を解除した状態を維持する。"""
+        out = write_html(rich_ctx, tmp_path / "out.html")
+        body = out.read_text(encoding="utf-8")
+        # 旧バグの組み合わせを直接禁止
+        assert "header { background: #305496; color: #fff; padding: 16px 24px; position: sticky" not in body
+
+    def test_section_has_scroll_margin_top(
+        self, rich_ctx: ReportContext, tmp_path: Path
+    ):
+        """Issue 3: アンカージャンプ時、section 見出しが画面端に潜らないように余白がある。"""
+        out = write_html(rich_ctx, tmp_path / "out.html")
+        body = out.read_text(encoding="utf-8")
+        assert "scroll-margin-top" in body, "section に scroll-margin-top を設定すること"
+
     def test_html_escapes_special_chars_in_paths(self, tmp_path: Path):
         """パス名に <script> を混ぜても素通りしないこと (HTMLエスケープ)。"""
         a = make_scan("A", files={"<script>.txt": make_entry("h")})

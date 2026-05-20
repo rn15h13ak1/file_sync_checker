@@ -372,21 +372,28 @@ _HTML_STYLE = """
 * { box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans",
        "Yu Gothic", sans-serif; margin: 0; color: #222; background: #fafafa; }
-header { background: #305496; color: #fff; padding: 16px 24px; position: sticky; top: 0; z-index: 10; }
+/* ページヘッダーは固定しない。代わりにテーブル列ヘッダーを sticky にして
+   長い表でも常に列名が見える状態を保つ。 */
+header { background: #305496; color: #fff; padding: 16px 24px; }
 header h1 { margin: 0 0 8px; font-size: 1.3rem; }
-header nav a { color: #fff; margin-right: 12px; text-decoration: none; font-size: 0.9rem; }
+header nav a { color: #fff; margin-right: 12px; padding: 4px 0;
+               text-decoration: none; font-size: 0.9rem; }
 header nav a:hover { text-decoration: underline; }
 main { padding: 24px; }
 section { background: #fff; border-radius: 6px; padding: 16px; margin-bottom: 24px;
-          box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+          box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+          /* アンカージャンプで section 見出しが画面端に潜らないよう余白 */
+          scroll-margin-top: 16px; }
 section h2 { margin-top: 0; font-size: 1.1rem; border-bottom: 2px solid #305496; padding-bottom: 6px; }
 table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
 th, td { border: 1px solid #ddd; padding: 4px 8px; text-align: left; vertical-align: top;
          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
-th { background: #305496; color: #fff; position: sticky; top: 0; }
-tr:nth-child(even) td { background: #f6f8fb; }
+thead th { background: #305496; color: #fff; position: sticky; top: 0; z-index: 5; }
+tbody tr:nth-child(odd) td { background: #fff; }
+tbody tr:nth-child(even) td { background: #f6f8fb; }
 td.hash { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.78rem; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
+/* ステータス・セル種別の塗りは zebra/sticky の背景を上書き */
 .status-ok { background: #c6efce !important; color: #006100; font-weight: bold; }
 .status-mismatch { background: #ffc7ce !important; color: #9c0006; font-weight: bold; }
 .status-missing { background: #ffd8a8 !important; color: #9c4500; font-weight: bold; }
@@ -396,10 +403,21 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .cell-missing { background: #d9d9d9 !important; color: #888; text-align: center; }
 .cell-error { background: #f4b084 !important; color: #6a2900; }
 .summary-table td:first-child { font-weight: bold; width: 240px; background: #f0f3f8; }
-.scroll-wrap { overflow-x: auto; max-width: 100%; }
-.fixed-col-table th:nth-child(2), .fixed-col-table td:nth-child(2) {
-  position: sticky; left: 0; background: inherit; z-index: 1;
+/* テーブルラッパー: 横スクロール + 大量行時は内部で縦スクロール。
+   max-height があると thead position:sticky が wrap スクロールに対して機能する。
+   行数が少なければそのまま自然な高さで表示される。 */
+.scroll-wrap { overflow: auto; max-width: 100%; max-height: 75vh; }
+/* 相対パス列を左に固定。背景を明示しないと sticky 時に下のセルが透けるため、
+   zebra に合わせて奇数行=白・偶数行=薄灰の背景を td に直接指定する。
+   th 側もヘッダ色を明示し、行ヘッダより前面に配置する。 */
+.fixed-col-table thead th:nth-child(2) {
+  position: sticky; left: 0; z-index: 10; background: #305496;
 }
+.fixed-col-table tbody td:nth-child(2) {
+  position: sticky; left: 0; z-index: 1;
+}
+.fixed-col-table tbody tr:nth-child(odd) td:nth-child(2) { background: #fff; }
+.fixed-col-table tbody tr:nth-child(even) td:nth-child(2) { background: #f6f8fb; }
 .empty { color: #888; font-style: italic; padding: 8px; }
 """
 
