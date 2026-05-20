@@ -5,6 +5,7 @@ I/O ロジックなので「正しく生成され、想定のシート/セクシ
 """
 from __future__ import annotations
 
+import html as html_mod
 from datetime import datetime
 from pathlib import Path
 
@@ -393,75 +394,80 @@ class TestHtml:
         body = out.read_text(encoding="utf-8")
         assert "scroll-margin-top" in body, "section に scroll-margin-top を設定すること"
 
-    def test_file_row_has_data_relpath_attribute(
+    def test_file_row_has_required_data_attributes(
         self, rich_ctx: ReportContext, tmp_path: Path
     ):
-        """行クリック展開のために data-relpath が付与されている。"""
+        """行クリックでモーダルを開くために data-relpath と data-detail-html が付与される。"""
         out = write_html(rich_ctx, tmp_path / "out.html")
         body = out.read_text(encoding="utf-8")
-        assert 'class="file-row" data-relpath="mismatch.txt"' in body
-        assert 'class="file-row" data-relpath="ok.txt"' in body
+        assert 'data-relpath="mismatch.txt"' in body
+        assert 'data-relpath="ok.txt"' in body
+        # 詳細 HTML がエスケープされて埋め込まれている
+        assert 'data-detail-html="' in body
 
-    def test_detail_row_pre_rendered_hidden(
+    def test_no_inline_detail_row_rendered(
         self, rich_ctx: ReportContext, tmp_path: Path
     ):
-        """詳細行は最初は hidden、各ファイル行の直後に挿入される。"""
+        """詳細はモーダル経由になったため、インラインの detail-row は出力されない。"""
         out = write_html(rich_ctx, tmp_path / "out.html")
         body = out.read_text(encoding="utf-8")
-        assert '<tr class="detail-row" hidden>' in body
-        # 5 セクション × 含まれる件数: 全(5) + 不一致(1) + 欠落(1) + 余分(1) + エラー(1) = 9
-        assert body.count('class="detail-row"') == 9
+        assert "detail-row" not in body
 
-    def test_section_has_expand_controls(
+    def test_no_section_expand_controls(
         self, rich_ctx: ReportContext, tmp_path: Path
     ):
-        """各ファイルテーブル section に 全展開 / 全折りたたみ ボタンがある。"""
+        """モーダル化により 全展開/全折りたたみ ボタンは削除済み。"""
         out = write_html(rich_ctx, tmp_path / "out.html")
         body = out.read_text(encoding="utf-8")
-        assert 'data-action="expand-all"' in body
-        assert 'data-action="collapse-all"' in body
+        assert "data-action=" not in body
+        assert "expand-all" not in body
+        assert "collapse-all" not in body
 
-    def test_copy_buttons_have_correct_paths(
+    def test_detail_html_contains_copy_paths(
         self, rich_ctx: ReportContext, tmp_path: Path
     ):
-        """各拠点の data-copy にフルパスとフォルダパスが入っている。
+        """data-detail-html の中身を unescape した状態で各拠点のコピー用パスが含まれる。
 
         rich_ctx の拠点ルートは make_scan のデフォルト '/tmp/dummy' のため UNIX 形式。
         relpath='mismatch.txt' → full='/tmp/dummy/mismatch.txt', folder='/tmp/dummy'
         """
         out = write_html(rich_ctx, tmp_path / "out.html")
         body = out.read_text(encoding="utf-8")
-        assert 'data-copy="/tmp/dummy/mismatch.txt"' in body  # ファイル
-        assert 'data-copy="/tmp/dummy"' in body  # フォルダ (ボタンには残す)
+        # data-detail-html 属性内の HTML は属性向けエスケープが掛かっているため
+        # 一度デコードしてから検査する
+        decoded = html_mod.unescape(body)
+        assert 'data-copy="/tmp/dummy/mismatch.txt"' in decoded  # ファイル
+        assert 'data-copy="/tmp/dummy"' in decoded  # フォルダ
 
     def test_detail_path_table_omits_folder_column(
         self, rich_ctx: ReportContext, tmp_path: Path
     ):
         """フォルダパス列は廃止 (ボタンには残るが列としては表示しない)。"""
         out = write_html(rich_ctx, tmp_path / "out.html")
-        body = out.read_text(encoding="utf-8")
-        # ヘッダの「フォルダパス」列が無い
-        assert "<th>フォルダパス</th>" not in body
-        # ファイルパス列は残っている
-        assert "<th>ファイルパス</th>" in body
+        decoded = html_mod.unescape(out.read_text(encoding="utf-8"))
+        assert "<th>フォルダパス</th>" not in decoded
+        assert "<th>ファイルパス</th>" in decoded
 
-    def test_detail_panel_constrained_to_viewport_width(
+    def test_modal_dialog_present(
         self, rich_ctx: ReportContext, tmp_path: Path
     ):
-        """詳細パネルが viewport を超えないよう max-width を持つ。"""
+        """ページ末尾に <dialog id="detail-modal"> が1つ存在。"""
         out = write_html(rich_ctx, tmp_path / "out.html")
         body = out.read_text(encoding="utf-8")
-        assert "max-width: calc(100vw" in body
+        assert '<dialog id="detail-modal"' in body
+        assert 'id="detail-modal-title"' in body
+        assert 'id="detail-modal-content"' in body
+        # close ボタン
+        assert 'class="modal-close"' in body
 
-    def test_long_path_wraps_in_detail_table(
+    def test_modal_script_present(
         self, rich_ctx: ReportContext, tmp_path: Path
     ):
-        """ファイルパス列は折り返し有効、拠点/状態列は nowrap。"""
+        """showModal / close の呼び出しを含む JS が埋め込まれている。"""
         out = write_html(rich_ctx, tmp_path / "out.html")
         body = out.read_text(encoding="utf-8")
-        # 折り返しを許可する列クラス
-        assert ".detail-table .path-cell" in body
-        assert "overflow-wrap: anywhere" in body
+        assert "showModal" in body
+        assert "modal.close" in body
 
     def test_clipboard_script_with_fallback_present(
         self, rich_ctx: ReportContext, tmp_path: Path

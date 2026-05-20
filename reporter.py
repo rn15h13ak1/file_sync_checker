@@ -394,6 +394,16 @@ def write_html(ctx: ReportContext, out_path: Path) -> Path:
   {dir_html}
   {err_html}
 </main>
+<dialog id="detail-modal" aria-labelledby="detail-modal-title">
+  <div class="modal-header">
+    <h3 id="detail-modal-title">詳細情報</h3>
+    <button type="button" class="modal-close" aria-label="閉じる">&times;</button>
+  </div>
+  <div class="modal-content" id="detail-modal-content"></div>
+  <div class="modal-footer">
+    <button type="button" class="modal-close">閉じる</button>
+  </div>
+</dialog>
 <script>
 {_HTML_SCRIPT}
 </script>
@@ -456,36 +466,61 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .fixed-col-table tbody tr:nth-child(even) td:nth-child(2) { background: #f6f8fb; }
 .empty { color: #888; font-style: italic; padding: 8px; }
 
-/* ===== 行展開・コピー操作 ===== */
+/* ===== ファイル行 (クリックでモーダル表示) ===== */
 tr.file-row { cursor: pointer; }
 tr.file-row:hover td { filter: brightness(0.97); }
-tr.file-row .expand-indicator {
-  display: inline-block; color: #888; margin-right: 6px;
-  transition: transform 0.15s; user-select: none;
+
+/* ===== 詳細モーダル ===== */
+dialog#detail-modal {
+  padding: 0; border: none; border-radius: 8px;
+  width: min(900px, 92vw); max-height: 90vh;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.25);
+  background: #fff; overflow: hidden;
+  /* native <dialog> centering */
 }
-tr.file-row.expanded .expand-indicator { transform: rotate(90deg); }
-tr.detail-row > td { padding: 0 !important; background: #f9fafe !important; }
-/* 詳細パネルは viewport 幅以内に収め、内部テーブルが拡がりすぎないようにする。
-   メインテーブルが横にスクロールされた場合は通常通りパネルも一緒にスクロールする
-   (table 内での position:sticky はブラウザ実装が不安定なため非採用)。 */
-.detail-panel {
-  padding: 12px 24px;
-  max-width: calc(100vw - 80px);
-  box-sizing: border-box;
+dialog#detail-modal::backdrop { background: rgba(0,0,0,0.45); }
+.modal-header {
+  background: #305496; color: #fff; padding: 12px 20px;
+  display: flex; align-items: center; justify-content: space-between;
 }
-.detail-panel h4 {
-  margin: 8px 0 4px; font-size: 0.85rem; color: #305496;
-  border-bottom: 1px solid #d6deeb; padding-bottom: 2px;
+.modal-header h3 { margin: 0; font-size: 1rem; font-weight: normal; }
+.modal-close {
+  background: transparent; border: none; color: inherit;
+  cursor: pointer; line-height: 1; font-family: inherit; padding: 0 4px;
 }
-.detail-table { width: 100%; max-width: 960px; margin-bottom: 8px; font-size: 0.8rem; }
+.modal-header .modal-close { font-size: 1.4rem; }
+.modal-content {
+  padding: 16px 24px; overflow-y: auto;
+  max-height: calc(90vh - 110px);
+}
+.modal-footer {
+  padding: 8px 20px; border-top: 1px solid #e0e0e0; text-align: right;
+}
+.modal-footer .modal-close {
+  background: #305496; color: #fff; padding: 6px 18px;
+  border-radius: 4px; font-size: 0.9rem;
+}
+.modal-footer .modal-close:hover { background: #243d6f; }
+.modal-summary {
+  display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px;
+  margin: 0 0 12px 0; font-size: 0.85rem;
+}
+.modal-summary dt { font-weight: bold; color: #555; }
+.modal-summary dd { margin: 0; }
+.modal-summary dd code {
+  background: #f4f4f8; padding: 2px 6px; border-radius: 3px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.82rem; word-break: break-all;
+}
+
+/* ===== モーダル内詳細テーブル ===== */
+.detail-table { width: 100%; margin-bottom: 12px; font-size: 0.82rem; }
 .detail-table thead th { position: static; white-space: nowrap; }
 .detail-table td, .detail-table th { max-width: none; padding: 4px 8px; }
 .detail-table td { white-space: nowrap; }
-/* ファイルパス・SHA-256 など長くなる列のみ折り返しを許可 */
 .detail-table .path-cell, .detail-table .hash-cell {
   white-space: normal; overflow-wrap: anywhere; word-break: break-all;
 }
-/* ファイルパス列を最も広く、操作列はボタンに合わせて最小幅で */
 .detail-table.detail-paths .path-cell { width: 100%; }
 .detail-table.detail-paths .action-cell { white-space: nowrap; width: 1%; }
 .detail-table code {
@@ -495,20 +530,24 @@ tr.detail-row > td { padding: 0 !important; background: #f9fafe !important; }
   user-select: all; display: inline-block; max-width: 100%;
 }
 .detail-table .muted { color: #888; font-style: italic; }
-button[data-copy], button[data-action] {
+
+/* ===== コピーボタン ===== */
+button[data-copy] {
   background: #fff; border: 1px solid #305496; color: #305496;
   border-radius: 4px; padding: 3px 9px; cursor: pointer;
   font-size: 0.78rem; margin: 2px 4px 2px 0; font-family: inherit;
 }
-button[data-copy]:hover, button[data-action]:hover { background: #305496; color: #fff; }
+button[data-copy]:hover { background: #305496; color: #fff; }
 button[data-copy].copied { background: #c6efce; color: #006100; border-color: #6b9e6e; }
-.section-controls { float: right; font-weight: normal; }
-.section-controls button { padding: 3px 10px; }
 """
 
 
 _HTML_SCRIPT = """
 (() => {
+  const modal = document.getElementById("detail-modal");
+  const modalTitle = document.getElementById("detail-modal-title");
+  const modalContent = document.getElementById("detail-modal-content");
+
   // クリップボードコピー: 新 API → 旧 API (file:// など制限環境向け) フォールバック
   function copyText(text) {
     if (navigator.clipboard && navigator.clipboard.writeText && window.isSecureContext) {
@@ -539,8 +578,35 @@ _HTML_SCRIPT = """
     }, 1200);
   }
 
+  function openDetailModal(row) {
+    modalTitle.textContent = "詳細情報: " + row.dataset.relpath;
+    modalContent.innerHTML = row.dataset.detailHtml || "";
+    if (typeof modal.showModal === "function") {
+      modal.showModal();
+    } else {
+      // <dialog> 非対応ブラウザ向けフォールバック (非常に古い環境のみ)
+      modal.setAttribute("open", "");
+    }
+  }
+
+  function closeModal() {
+    if (typeof modal.close === "function" && modal.open) {
+      modal.close();
+    } else {
+      modal.removeAttribute("open");
+    }
+  }
+
+  // ESC キーでモーダルを閉じる (native dialog でも効くが、明示しておく)
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && modal.open) {
+      e.preventDefault();
+      closeModal();
+    }
+  });
+
   document.addEventListener("click", (e) => {
-    // 1) コピーボタン
+    // 1) コピーボタン (モーダル内・モーダル外どちらでも)
     const copyBtn = e.target.closest("button[data-copy]");
     if (copyBtn) {
       e.stopPropagation();
@@ -549,26 +615,24 @@ _HTML_SCRIPT = """
       return;
     }
 
-    // 2) section レベルの 全展開 / 全折りたたみ
-    const actionBtn = e.target.closest("button[data-action]");
-    if (actionBtn) {
+    // 2) モーダル閉じるボタン
+    if (e.target.closest(".modal-close")) {
       e.stopPropagation();
-      const expand = actionBtn.dataset.action === "expand-all";
-      const section = actionBtn.closest("section");
-      section.querySelectorAll("tr.detail-row").forEach(r => { r.hidden = !expand; });
-      section.querySelectorAll("tr.file-row").forEach(r => r.classList.toggle("expanded", expand));
+      closeModal();
       return;
     }
 
-    // 3) 行クリックで詳細行をトグル (テキスト選択中は除外)
+    // 3) バックドロップクリックで閉じる (dialog 自身が target になる場合)
+    if (e.target === modal) {
+      closeModal();
+      return;
+    }
+
+    // 4) 行クリックでモーダル展開 (テキスト選択中は除外)
     if (window.getSelection && window.getSelection().toString()) return;
     const row = e.target.closest("tr.file-row");
     if (row) {
-      const detail = row.nextElementSibling;
-      if (detail && detail.classList.contains("detail-row")) {
-        detail.hidden = !detail.hidden;
-        row.classList.toggle("expanded");
-      }
+      openDetailModal(row);
     }
   });
 })();
@@ -646,13 +710,15 @@ def _html_summary_section(ctx: ReportContext, elapsed: float) -> str:
 """
 
 
-def _render_detail_row(
+def _render_detail_html(
     row: FileRow,
     loc_names: List[str],
     location_roots: Dict[str, str],
-    colspan: int,
 ) -> str:
-    """行クリックで展開される詳細パネル (パス・ハッシュ + コピーボタン)。"""
+    """モーダルダイアログに流し込む詳細 HTML を返す (外側ラッパ含まず)。
+
+    パス情報テーブルとハッシュ詳細テーブル、それぞれにコピーボタンを含む。
+    """
     path_rows: List[str] = []
     for loc in loc_names:
         root = location_roots.get(loc, "")
@@ -711,9 +777,14 @@ def _render_detail_row(
                 "</tr>"
             )
 
+    summary_html = (
+        f'<dl class="modal-summary">'
+        f'<dt>相対パス</dt><dd><code>{html.escape(row.relpath)}</code></dd>'
+        f'<dt>状態</dt><dd class="{_status_class(row.status)}">{html.escape(row.status)}</dd>'
+        f'</dl>'
+    )
     return (
-        f'<tr class="detail-row" hidden><td colspan="{colspan}">'
-        f'<div class="detail-panel">'
+        f'{summary_html}'
         f'<h4>パス情報</h4>'
         f'<table class="detail-table detail-paths">'
         f'<thead><tr><th>拠点</th><th>状態</th><th>ファイルパス</th><th>操作</th></tr></thead>'
@@ -724,7 +795,6 @@ def _render_detail_row(
         f'<thead><tr><th>拠点</th><th>SHA-256</th><th>サイズ</th><th>操作</th></tr></thead>'
         f'<tbody>{"".join(hash_rows)}</tbody>'
         f'</table>'
-        f'</div></td></tr>'
     )
 
 
@@ -748,22 +818,15 @@ def _html_file_table(
         headers.extend([f"{n}: サイズ", f"{n}: ハッシュ", f"{n}: 更新日時"])
 
     head_html = "".join(f"<th>{html.escape(h)}</th>" for h in headers)
-    colspan = 5 + 3 * len(loc_names)
 
     body_lines: List[str] = []
     for i, row in enumerate(rows, 1):
         name = row.relpath.rsplit("/", 1)[-1]
         ext = Path(name).suffix
         status_cls = _status_class(row.status)
-        # 相対パスセルに展開インジケータ (▶) を埋める
-        relpath_cell = (
-            f"<td title='{html.escape(row.relpath)}'>"
-            f"<span class='expand-indicator'>&#9654;</span>"
-            f"{html.escape(row.relpath)}</td>"
-        )
         cells: List[str] = [
             f"<td class='num'>{i}</td>",
-            relpath_cell,
+            f"<td title='{html.escape(row.relpath)}'>{html.escape(row.relpath)}</td>",
             f"<td>{html.escape(name)}</td>",
             f"<td>{html.escape(ext)}</td>",
             f"<td class='{status_cls}'>{html.escape(row.status)}</td>",
@@ -797,21 +860,19 @@ def _html_file_table(
                     f"{html.escape(entry.hash[:12])}…</td>"
                 )
                 cells.append(f"<td>{html.escape(entry.mtime.strftime(DATETIME_FMT))}</td>")
+        # 詳細 HTML を data-detail-html に埋め込む (JS が innerHTML に流し込む)
+        detail_html = _render_detail_html(row, loc_names, location_roots)
         body_lines.append(
-            f'<tr class="file-row" data-relpath="{html.escape(row.relpath, quote=True)}">'
+            f'<tr class="file-row" '
+            f'data-relpath="{html.escape(row.relpath, quote=True)}" '
+            f'data-detail-html="{html.escape(detail_html, quote=True)}">'
             + "".join(cells)
             + "</tr>"
         )
-        body_lines.append(_render_detail_row(row, loc_names, location_roots, colspan))
 
     return f"""
 <section id="{sid}">
-  <h2>{html.escape(title)} ({len(rows):,} 件)
-    <span class="section-controls">
-      <button type="button" data-action="expand-all">全展開</button>
-      <button type="button" data-action="collapse-all">全折りたたみ</button>
-    </span>
-  </h2>
+  <h2>{html.escape(title)} ({len(rows):,} 件)</h2>
   <div class="scroll-wrap"><table class="fixed-col-table">
     <thead><tr>{head_html}</tr></thead>
     <tbody>{"".join(body_lines)}</tbody>
