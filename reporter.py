@@ -26,7 +26,7 @@ from scanner import FileEntry, ScanResult
 from utils import human_bytes
 
 
-MISSING_PLACEHOLDER = "－"
+MISSING_PLACEHOLDER = "-"
 ERROR_PLACEHOLDER = "エラー"
 DATETIME_FMT = "%Y-%m-%d %H:%M:%S"
 

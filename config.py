@@ -1,9 +1,10 @@
 """設定ファイル(YAML)の読み込みと検証。"""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 import yaml
 
@@ -79,6 +80,17 @@ def load_config(path: str | Path) -> Config:
 
     if len(locations) < 2:
         raise ConfigError("locations は2件以上必要です")
+
+    # パス重複検出: 同じ実体パスを複数拠点として登録すると常に一致してしまうため弾く。
+    # os.path.normcase は Windows では大小無視・スラッシュ統一、UNIX では no-op。
+    seen_paths: Dict[str, str] = {}
+    for loc in locations:
+        key = os.path.normcase(os.path.normpath(str(loc.path)))
+        if key in seen_paths:
+            raise ConfigError(
+                f"拠点 '{loc.name}' のパスが拠点 '{seen_paths[key]}' と重複しています: {loc.path}"
+            )
+        seen_paths[key] = loc.name
 
     exclude_patterns = raw.get("exclude_patterns") or []
     if not isinstance(exclude_patterns, list):
