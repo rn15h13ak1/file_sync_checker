@@ -76,6 +76,22 @@ python /full/path/to/main.py -c /full/path/to/config.yaml
 - 欠落セルは「－」灰色背景
 - 1行目固定 + 相対パス列固定（横スクロール対応）
 
+## 開発・テスト
+
+```bash
+pip install -r requirements-dev.txt
+pytest          # 49 テストケース
+pytest -v       # 詳細出力
+pytest -k mino  # 特定の名前のテストだけ
+```
+
+テストは以下の境界・分岐をカバー:
+- `comparator._classify`: 3拠点 2:1 / 1:2、4拠点 2:2 / 3:1、エラー優先判定
+- `comparator.minority_hashes`: 明確な過半数、タイ、全部違う、None 混在
+- `comparator.compare`: エラー対象を欠落と分離、相対パスソート、dir差分
+- `scanner`: 除外パターン（ファイル/ディレクトリ再帰）、シンボリックリンク非追跡、読取失敗の記録、並列とシリアルの結果一致
+- `config`: 拠点パス重複（末尾スラッシュ含む）、相対パス解決、各種バリデーション
+
 ## モジュール構成
 
 ```
@@ -86,6 +102,7 @@ file_sync_checker/
 ├── comparator.py  N 拠点間の差分検出
 ├── reporter.py    Excel / HTML 出力
 ├── utils.py       ロギング・共通関数
+├── tests/         pytest スイート
 └── config.example.yaml
 ```
 
