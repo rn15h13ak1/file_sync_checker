@@ -116,6 +116,30 @@ performance:
         with pytest.raises(ConfigError, match="hash_algorithm"):
             load_config(cfg)
 
+    def test_backslash_path_rejected(self, tmp_path: Path):
+        """バックスラッシュ表記 (\\\\server\\share) は YAML パース時に潰れて壊れがちなので拒否。"""
+        cfg = _write(tmp_path / "c.yaml", """
+locations:
+  - name: A
+    path: "\\\\\\\\server-a\\\\share\\\\docs"
+  - name: B
+    path: /opt/b
+""")
+        with pytest.raises(ConfigError, match="バックスラッシュ"):
+            load_config(cfg)
+
+    def test_backslash_anywhere_in_path_rejected(self, tmp_path: Path):
+        """混在パスも拒否 (フォワードスラッシュ統一の方針)。"""
+        cfg = _write(tmp_path / "c.yaml", """
+locations:
+  - name: A
+    path: "//server-a/share\\\\docs"
+  - name: B
+    path: /opt/b
+""")
+        with pytest.raises(ConfigError, match="バックスラッシュ"):
+            load_config(cfg)
+
     def test_missing_path_in_location(self, tmp_path: Path):
         cfg = _write(tmp_path / "c.yaml", """
 locations:

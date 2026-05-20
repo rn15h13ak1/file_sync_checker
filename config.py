@@ -75,8 +75,17 @@ def load_config(path: str | Path) -> Config:
             raise ConfigError(f"locations[{i}] は name と path が必須です")
         if name in seen_names:
             raise ConfigError(f"拠点名が重複しています: {name}")
+        # バックスラッシュ表記は YAML パース時に潰れて壊れることが多く、
+        # またコピー機能でのパス組み立てを単純化するためフォワードスラッシュに統一する。
+        path_str = str(path)
+        if "\\" in path_str:
+            raise ConfigError(
+                f"locations[{i}].path にバックスラッシュが含まれています: {path_str!r}\n"
+                f"  → フォワードスラッシュで記述してください "
+                f"(例: '//server-a/share/docs')"
+            )
         seen_names.add(name)
-        locations.append(Location(name=str(name), path=_resolve(Path(str(path)), base_dir)))
+        locations.append(Location(name=str(name), path=_resolve(Path(path_str), base_dir)))
 
     if len(locations) < 2:
         raise ConfigError("locations は2件以上必要です")

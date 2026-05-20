@@ -22,11 +22,64 @@ from reporter import (
     ERROR_PLACEHOLDER,
     MISSING_PLACEHOLDER,
     ReportContext,
+    _build_paths,
+    _looks_windows,
     write_excel,
     write_html,
 )
 
 from .conftest import make_entry, make_scan
+
+
+# ============================================================
+# パス組み立てヘルパー
+# ============================================================
+class TestLooksWindows:
+    def test_unc_forward_slash(self):
+        assert _looks_windows("//server/share/docs") is True
+
+    def test_unc_backslash(self):
+        assert _looks_windows("\\\\server\\share\\docs") is True
+
+    def test_drive_letter(self):
+        assert _looks_windows("C:/Users/foo") is True
+        assert _looks_windows("D:") is True
+
+    def test_unix_path(self):
+        assert _looks_windows("/mnt/share/docs") is False
+        assert _looks_windows("/Users/foo") is False
+
+    def test_relative_path(self):
+        assert _looks_windows("relative/path") is False
+
+
+class TestBuildPaths:
+    def test_unc_forward_slash_normalizes_to_backslash(self):
+        """設定が //server/share/docs でも Windows 形式に統一する。"""
+        full, folder = _build_paths("//server-a/share/docs", "設計/詳細/spec.xlsx")
+        assert full == "\\\\server-a\\share\\docs\\設計\\詳細\\spec.xlsx"
+        assert folder == "\\\\server-a\\share\\docs\\設計\\詳細"
+
+    def test_file_at_root_of_share(self):
+        full, folder = _build_paths("//server/share", "file.txt")
+        assert full == "\\\\server\\share\\file.txt"
+        assert folder == "\\\\server\\share"
+
+    def test_unix_root_keeps_forward_slash(self):
+        full, folder = _build_paths("/mnt/data", "sub/file.txt")
+        assert full == "/mnt/data/sub/file.txt"
+        assert folder == "/mnt/data/sub"
+
+    def test_drive_letter_root(self):
+        full, folder = _build_paths("C:/Users/foo", "docs/file.txt")
+        assert full == "C:\\Users\\foo\\docs\\file.txt"
+        assert folder == "C:\\Users\\foo\\docs"
+
+    def test_trailing_separator_stripped(self):
+        """ルートの末尾セパレータがあっても二重にならない。"""
+        full, _ = _build_paths("//server/share/", "file.txt")
+        assert "\\\\\\" not in full  # 三重セパレータが現れない
+        assert full == "\\\\server\\share\\file.txt"
 
 
 # ============================================================
@@ -340,6 +393,58 @@ class TestHtml:
         body = out.read_text(encoding="utf-8")
         assert "scroll-margin-top" in body, "section に scroll-margin-top を設定すること"
 
+    def test_file_row_has_data_relpath_attribute(
+        self, rich_ctx: ReportContext, tmp_path: Path
+    ):
+        """行クリック展開のために data-relpath が付与されている。"""
+        out = write_html(rich_ctx, tmp_path / "out.html")
+        body = out.read_text(encoding="utf-8")
+        assert 'class="file-row" data-relpath="mismatch.txt"' in body
+        assert 'class="file-row" data-relpath="ok.txt"' in body
+
+    def test_detail_row_pre_rendered_hidden(
+        self, rich_ctx: ReportContext, tmp_path: Path
+    ):
+        """詳細行は最初は hidden、各ファイル行の直後に挿入される。"""
+        out = write_html(rich_ctx, tmp_path / "out.html")
+        body = out.read_text(encoding="utf-8")
+        assert '<tr class="detail-row" hidden>' in body
+        # 5 セクション × 含まれる件数: 全(5) + 不一致(1) + 欠落(1) + 余分(1) + エラー(1) = 9
+        assert body.count('class="detail-row"') == 9
+
+    def test_section_has_expand_controls(
+        self, rich_ctx: ReportContext, tmp_path: Path
+    ):
+        """各ファイルテーブル section に 全展開 / 全折りたたみ ボタンがある。"""
+        out = write_html(rich_ctx, tmp_path / "out.html")
+        body = out.read_text(encoding="utf-8")
+        assert 'data-action="expand-all"' in body
+        assert 'data-action="collapse-all"' in body
+
+    def test_copy_buttons_have_correct_paths(
+        self, rich_ctx: ReportContext, tmp_path: Path
+    ):
+        """各拠点の data-copy にフルパスとフォルダパスが入っている。
+
+        rich_ctx の拠点ルートは make_scan のデフォルト '/tmp/dummy' のため UNIX 形式。
+        relpath='mismatch.txt' → full='/tmp/dummy/mismatch.txt', folder='/tmp/dummy'
+        """
+        out = write_html(rich_ctx, tmp_path / "out.html")
+        body = out.read_text(encoding="utf-8")
+        assert 'data-copy="/tmp/dummy/mismatch.txt"' in body
+        assert 'data-copy="/tmp/dummy"' in body  # フォルダパス
+
+    def test_clipboard_script_with_fallback_present(
+        self, rich_ctx: ReportContext, tmp_path: Path
+    ):
+        """新 API と旧 API フォールバック両方の呼び出しが script に含まれる。"""
+        out = write_html(rich_ctx, tmp_path / "out.html")
+        body = out.read_text(encoding="utf-8")
+        # 新 API
+        assert "navigator.clipboard.writeText" in body
+        # 旧 API フォールバック
+        assert "document.execCommand" in body
+
     def test_html_escapes_special_chars_in_paths(self, tmp_path: Path):
         """パス名に <script> を混ぜても素通りしないこと (HTMLエスケープ)。"""
         a = make_scan("A", files={"<script>.txt": make_entry("h")})
@@ -354,5 +459,6 @@ class TestHtml:
         )
         out = write_html(ctx, tmp_path / "evil.html")
         body = out.read_text(encoding="utf-8")
-        assert "<script>" not in body  # 生の <script> は無い
-        assert "&lt;script&gt;" in body  # エスケープされた形で入っている
+        # ファイル名由来の <script>.txt は素のまま出ない (エスケープされている)
+        assert "<script>.txt" not in body
+        assert "&lt;script&gt;.txt" in body

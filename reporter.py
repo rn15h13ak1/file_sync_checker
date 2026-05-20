@@ -31,6 +31,36 @@ ERROR_PLACEHOLDER = "エラー"
 DATETIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 
+def _looks_windows(root_str: str) -> bool:
+    """ルートが Windows UNC (`//` or `\\\\`) またはドライブレターか判定。"""
+    return (
+        root_str.startswith(("//", "\\\\"))
+        or (len(root_str) >= 2 and root_str[1] == ":")
+    )
+
+
+def _build_paths(root_str: str, relpath: str) -> tuple[str, str]:
+    """拠点のルートと相対パスからフルパスとフォルダパスを構築する。
+
+    Windows ルート判定なら全セパレータをバックスラッシュに統一し、
+    Windows エクスプローラのアドレス欄に貼り付けて開ける形式にする。
+
+    Returns:
+        (full_file_path, folder_path)
+    """
+    if _looks_windows(root_str):
+        sep = "\\"
+        norm_root = root_str.replace("/", "\\").rstrip("\\")
+        rel = relpath.replace("/", "\\")
+    else:
+        sep = "/"
+        norm_root = root_str.rstrip("/")
+        rel = relpath
+    full = f"{norm_root}{sep}{rel}"
+    folder = full.rsplit(sep, 1)[0] if sep in full else full
+    return full, folder
+
+
 # === 配色 ===
 FILL_OK = PatternFill("solid", fgColor="C6EFCE")           # 緑
 FILL_HASH_MISMATCH = PatternFill("solid", fgColor="FFC7CE") # 赤
@@ -317,12 +347,15 @@ def write_html(ctx: ReportContext, out_path: Path) -> Path:
     elapsed = (ctx.finished_at - ctx.started_at).total_seconds()
     loc_names = ctx.comparison.location_names
 
+    # 各拠点のルートパス文字列 (config.yaml に書かれた形式そのまま)
+    location_roots = {s.location_name: str(s.root) for s in ctx.scans}
+
     summary_html = _html_summary_section(ctx, elapsed)
-    all_files_html = _html_file_table("全ファイル一覧", ctx.comparison.all_files, loc_names)
-    mismatch_html = _html_file_table("ハッシュ不一致", ctx.comparison.hash_mismatches, loc_names)
-    missing_html = _html_file_table("ファイル欠落", ctx.comparison.missing_files, loc_names)
-    extra_html = _html_file_table("余分なファイル", ctx.comparison.extra_files, loc_names)
-    errored_html = _html_file_table("エラー対象ファイル", ctx.comparison.errored_files, loc_names)
+    all_files_html = _html_file_table("全ファイル一覧", ctx.comparison.all_files, loc_names, location_roots)
+    mismatch_html = _html_file_table("ハッシュ不一致", ctx.comparison.hash_mismatches, loc_names, location_roots)
+    missing_html = _html_file_table("ファイル欠落", ctx.comparison.missing_files, loc_names, location_roots)
+    extra_html = _html_file_table("余分なファイル", ctx.comparison.extra_files, loc_names, location_roots)
+    errored_html = _html_file_table("エラー対象ファイル", ctx.comparison.errored_files, loc_names, location_roots)
     dir_html = _html_dir_diff(ctx.comparison.dir_diffs, loc_names)
     err_html = _html_errors(ctx.scans)
 
@@ -361,6 +394,9 @@ def write_html(ctx: ReportContext, out_path: Path) -> Path:
   {dir_html}
   {err_html}
 </main>
+<script>
+{_HTML_SCRIPT}
+</script>
 </body>
 </html>
 """
@@ -419,6 +455,109 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .fixed-col-table tbody tr:nth-child(odd) td:nth-child(2) { background: #fff; }
 .fixed-col-table tbody tr:nth-child(even) td:nth-child(2) { background: #f6f8fb; }
 .empty { color: #888; font-style: italic; padding: 8px; }
+
+/* ===== 行展開・コピー操作 ===== */
+tr.file-row { cursor: pointer; }
+tr.file-row:hover td { filter: brightness(0.97); }
+tr.file-row .expand-indicator {
+  display: inline-block; color: #888; margin-right: 6px;
+  transition: transform 0.15s; user-select: none;
+}
+tr.file-row.expanded .expand-indicator { transform: rotate(90deg); }
+tr.detail-row > td { padding: 0 !important; background: #f9fafe !important; }
+.detail-panel { padding: 12px 24px; }
+.detail-panel h4 {
+  margin: 8px 0 4px; font-size: 0.85rem; color: #305496;
+  border-bottom: 1px solid #d6deeb; padding-bottom: 2px;
+}
+.detail-table { width: auto; min-width: 50%; margin-bottom: 8px; font-size: 0.8rem; }
+.detail-table thead th { position: static; }
+.detail-table td, .detail-table th {
+  white-space: normal; max-width: none; padding: 4px 8px;
+}
+.detail-table code {
+  background: #f4f4f8; padding: 2px 6px; border-radius: 3px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.78rem; word-break: break-all; user-select: all;
+}
+.detail-table .muted { color: #888; font-style: italic; }
+button[data-copy], button[data-action] {
+  background: #fff; border: 1px solid #305496; color: #305496;
+  border-radius: 4px; padding: 3px 9px; cursor: pointer;
+  font-size: 0.78rem; margin: 2px 4px 2px 0; font-family: inherit;
+}
+button[data-copy]:hover, button[data-action]:hover { background: #305496; color: #fff; }
+button[data-copy].copied { background: #c6efce; color: #006100; border-color: #6b9e6e; }
+.section-controls { float: right; font-weight: normal; }
+.section-controls button { padding: 3px 10px; }
+"""
+
+
+_HTML_SCRIPT = """
+(() => {
+  // クリップボードコピー: 新 API → 旧 API (file:// など制限環境向け) フォールバック
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText && window.isSecureContext) {
+      return navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+    }
+    return Promise.resolve(fallbackCopy(text));
+  }
+  function fallbackCopy(text) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (e) { /* ignore */ }
+    document.body.removeChild(ta);
+  }
+
+  function flashCopied(btn) {
+    const original = btn.innerHTML;
+    btn.classList.add("copied");
+    btn.innerHTML = "&#10003; Copied";
+    setTimeout(() => {
+      btn.classList.remove("copied");
+      btn.innerHTML = original;
+    }, 1200);
+  }
+
+  document.addEventListener("click", (e) => {
+    // 1) コピーボタン
+    const copyBtn = e.target.closest("button[data-copy]");
+    if (copyBtn) {
+      e.stopPropagation();
+      copyText(copyBtn.dataset.copy);
+      flashCopied(copyBtn);
+      return;
+    }
+
+    // 2) section レベルの 全展開 / 全折りたたみ
+    const actionBtn = e.target.closest("button[data-action]");
+    if (actionBtn) {
+      e.stopPropagation();
+      const expand = actionBtn.dataset.action === "expand-all";
+      const section = actionBtn.closest("section");
+      section.querySelectorAll("tr.detail-row").forEach(r => { r.hidden = !expand; });
+      section.querySelectorAll("tr.file-row").forEach(r => r.classList.toggle("expanded", expand));
+      return;
+    }
+
+    // 3) 行クリックで詳細行をトグル (テキスト選択中は除外)
+    if (window.getSelection && window.getSelection().toString()) return;
+    const row = e.target.closest("tr.file-row");
+    if (row) {
+      const detail = row.nextElementSibling;
+      if (detail && detail.classList.contains("detail-row")) {
+        detail.hidden = !detail.hidden;
+        row.classList.toggle("expanded");
+      }
+    }
+  });
+})();
 """
 
 
@@ -493,7 +632,94 @@ def _html_summary_section(ctx: ReportContext, elapsed: float) -> str:
 """
 
 
-def _html_file_table(title: str, rows: List[FileRow], loc_names: List[str]) -> str:
+def _render_detail_row(
+    row: FileRow,
+    loc_names: List[str],
+    location_roots: Dict[str, str],
+    colspan: int,
+) -> str:
+    """行クリックで展開される詳細パネル (パス・ハッシュ + コピーボタン)。"""
+    path_rows: List[str] = []
+    for loc in loc_names:
+        root = location_roots.get(loc, "")
+        full, folder = _build_paths(root, row.relpath)
+        err = row.errors.get(loc)
+        entry = row.entries.get(loc)
+        if err is not None:
+            status_html = f"<td class='muted'>エラー</td>"
+        elif entry is None:
+            status_html = f"<td class='muted'>欠落</td>"
+        else:
+            status_html = f"<td>あり</td>"
+        path_rows.append(
+            "<tr>"
+            f"<td>{html.escape(loc)}</td>"
+            f"{status_html}"
+            f"<td><code>{html.escape(full)}</code></td>"
+            f"<td><code>{html.escape(folder)}</code></td>"
+            f"<td>"
+            f"<button type='button' data-copy=\"{html.escape(full, quote=True)}\" "
+            f"title='ファイルのフルパスをコピー'>📋 ファイル</button>"
+            f"<button type='button' data-copy=\"{html.escape(folder, quote=True)}\" "
+            f"title='フォルダパスをコピー (Windows エクスプローラに貼り付けて開く)'>📁 フォルダ</button>"
+            f"</td>"
+            f"</tr>"
+        )
+
+    hash_rows: List[str] = []
+    for loc in loc_names:
+        entry = row.entries.get(loc)
+        err = row.errors.get(loc)
+        if err is not None:
+            hash_rows.append(
+                "<tr>"
+                f"<td>{html.escape(loc)}</td>"
+                f"<td colspan='2' class='muted'>エラー: {html.escape(err)}</td>"
+                f"<td></td>"
+                "</tr>"
+            )
+        elif entry is None:
+            hash_rows.append(
+                "<tr>"
+                f"<td>{html.escape(loc)}</td>"
+                f"<td colspan='2' class='muted'>欠落</td>"
+                f"<td></td>"
+                "</tr>"
+            )
+        else:
+            hash_rows.append(
+                "<tr>"
+                f"<td>{html.escape(loc)}</td>"
+                f"<td><code>{html.escape(entry.hash)}</code></td>"
+                f"<td class='num'>{entry.size:,} B</td>"
+                f"<td><button type='button' data-copy=\"{html.escape(entry.hash, quote=True)}\" "
+                f"title='SHA-256 フル値をコピー'>📋 ハッシュ</button></td>"
+                "</tr>"
+            )
+
+    return (
+        f'<tr class="detail-row" hidden><td colspan="{colspan}">'
+        f'<div class="detail-panel">'
+        f'<h4>パス情報</h4>'
+        f'<table class="detail-table">'
+        f'<thead><tr><th>拠点</th><th>状態</th><th>ファイルパス</th><th>フォルダパス</th><th>操作</th></tr></thead>'
+        f'<tbody>{"".join(path_rows)}</tbody>'
+        f'</table>'
+        f'<h4>ハッシュ詳細 (SHA-256 フル値)</h4>'
+        f'<table class="detail-table">'
+        f'<thead><tr><th>拠点</th><th>SHA-256</th><th>サイズ</th><th>操作</th></tr></thead>'
+        f'<tbody>{"".join(hash_rows)}</tbody>'
+        f'</table>'
+        f'</div></td></tr>'
+    )
+
+
+def _html_file_table(
+    title: str,
+    rows: List[FileRow],
+    loc_names: List[str],
+    location_roots: Dict[str, str],
+) -> str:
     sid = _section_id(title)
     if not rows:
         return f"""
@@ -508,15 +734,22 @@ def _html_file_table(title: str, rows: List[FileRow], loc_names: List[str]) -> s
         headers.extend([f"{n}: サイズ", f"{n}: ハッシュ", f"{n}: 更新日時"])
 
     head_html = "".join(f"<th>{html.escape(h)}</th>" for h in headers)
+    colspan = 5 + 3 * len(loc_names)
 
     body_lines: List[str] = []
     for i, row in enumerate(rows, 1):
         name = row.relpath.rsplit("/", 1)[-1]
         ext = Path(name).suffix
         status_cls = _status_class(row.status)
+        # 相対パスセルに展開インジケータ (▶) を埋める
+        relpath_cell = (
+            f"<td title='{html.escape(row.relpath)}'>"
+            f"<span class='expand-indicator'>&#9654;</span>"
+            f"{html.escape(row.relpath)}</td>"
+        )
         cells: List[str] = [
             f"<td class='num'>{i}</td>",
-            f"<td title='{html.escape(row.relpath)}'>{html.escape(row.relpath)}</td>",
+            relpath_cell,
             f"<td>{html.escape(name)}</td>",
             f"<td>{html.escape(ext)}</td>",
             f"<td class='{status_cls}'>{html.escape(row.status)}</td>",
@@ -550,11 +783,21 @@ def _html_file_table(title: str, rows: List[FileRow], loc_names: List[str]) -> s
                     f"{html.escape(entry.hash[:12])}…</td>"
                 )
                 cells.append(f"<td>{html.escape(entry.mtime.strftime(DATETIME_FMT))}</td>")
-        body_lines.append("<tr>" + "".join(cells) + "</tr>")
+        body_lines.append(
+            f'<tr class="file-row" data-relpath="{html.escape(row.relpath, quote=True)}">'
+            + "".join(cells)
+            + "</tr>"
+        )
+        body_lines.append(_render_detail_row(row, loc_names, location_roots, colspan))
 
     return f"""
 <section id="{sid}">
-  <h2>{html.escape(title)} ({len(rows):,} 件)</h2>
+  <h2>{html.escape(title)} ({len(rows):,} 件)
+    <span class="section-controls">
+      <button type="button" data-action="expand-all">全展開</button>
+      <button type="button" data-action="collapse-all">全折りたたみ</button>
+    </span>
+  </h2>
   <div class="scroll-wrap"><table class="fixed-col-table">
     <thead><tr>{head_html}</tr></thead>
     <tbody>{"".join(body_lines)}</tbody>
