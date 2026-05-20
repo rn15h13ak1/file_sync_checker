@@ -43,6 +43,13 @@ class ScanResult:
     files: Dict[str, FileEntry]
     dirs: Dict[str, DirEntry]
     errors: List[ScanError]
+    # ファイル単位の読み取り失敗 (relpath -> message)。
+    # walk 中のディレクトリエラーやルートエラーは含まない。
+    file_errors: Dict[str, str] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.file_errors is None:
+            self.file_errors = {}
 
 
 def _is_excluded(name: str, patterns: Iterable[str]) -> bool:
@@ -162,18 +169,25 @@ def scan_location(
     files, dirs, errors = _walk(root, exclude_patterns)
 
     file_entries: Dict[str, FileEntry] = {}
+    # ファイル単位の読み取り失敗 (relpath -> message)。
+    # walk 段階のディレクトリ/ルートエラーは含めず、_process_file の失敗のみを記録する。
+    file_errors: Dict[str, str] = {}
     desc = f"[{name}] hashing"
     iterator: Iterable[Tuple[str, Optional[FileEntry], Optional[ScanError]]]
+
+    def _accumulate(relpath: str, entry: Optional[FileEntry], err: Optional[ScanError]) -> None:
+        if entry is not None:
+            file_entries[relpath] = entry
+        if err is not None:
+            errors.append(err)
+            file_errors[err.relpath] = err.message
 
     if parallel_workers <= 1 or len(files) <= 1:
         iterator = (_process_file(rp, ap, hash_algorithm) for rp, ap in files)
         if show_progress:
             iterator = tqdm(iterator, total=len(files), desc=desc, unit="file")
         for relpath, entry, err in iterator:
-            if entry is not None:
-                file_entries[relpath] = entry
-            if err is not None:
-                errors.append(err)
+            _accumulate(relpath, entry, err)
     else:
         with ThreadPoolExecutor(max_workers=parallel_workers) as ex:
             futures = [ex.submit(_process_file, rp, ap, hash_algorithm) for rp, ap in files]
@@ -184,10 +198,7 @@ def scan_location(
             )
             for fut in progress:
                 relpath, entry, err = fut.result()
-                if entry is not None:
-                    file_entries[relpath] = entry
-                if err is not None:
-                    errors.append(err)
+                _accumulate(relpath, entry, err)
 
     dir_entries = {d: DirEntry() for d in dirs}
 
@@ -197,4 +208,5 @@ def scan_location(
         files=file_entries,
         dirs=dir_entries,
         errors=errors,
+        file_errors=file_errors,
     )

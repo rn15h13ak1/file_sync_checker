@@ -13,18 +13,21 @@ from openpyxl.utils import get_column_letter
 from openpyxl.workbook.workbook import Workbook as WB
 
 from comparator import (
+    STATUS_ERROR,
     STATUS_HASH_MISMATCH,
     STATUS_OK,
     STATUS_PARTIAL_MISSING,
     STATUS_PARTIAL_PRESENT,
     ComparisonResult,
     FileRow,
+    minority_hashes,
 )
 from scanner import FileEntry, ScanResult
 from utils import human_bytes
 
 
 MISSING_PLACEHOLDER = "－"
+ERROR_PLACEHOLDER = "エラー"
 DATETIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 
@@ -33,6 +36,7 @@ FILL_OK = PatternFill("solid", fgColor="C6EFCE")           # 緑
 FILL_HASH_MISMATCH = PatternFill("solid", fgColor="FFC7CE") # 赤
 FILL_MISSING = PatternFill("solid", fgColor="FFD8A8")      # オレンジ
 FILL_PARTIAL = PatternFill("solid", fgColor="FFE699")      # 黄
+FILL_ERROR = PatternFill("solid", fgColor="F4B084")        # 濃いオレンジ (読み取り失敗)
 FILL_GRAY = PatternFill("solid", fgColor="D9D9D9")
 FILL_HEADER = PatternFill("solid", fgColor="305496")
 FONT_HEADER = Font(bold=True, color="FFFFFF")
@@ -61,6 +65,7 @@ def write_excel(ctx: ReportContext, out_path: Path) -> Path:
     _excel_subset(wb, ctx, "ハッシュ不一致", ctx.comparison.hash_mismatches)
     _excel_subset(wb, ctx, "ファイル欠落", ctx.comparison.missing_files)
     _excel_subset(wb, ctx, "余分なファイル", ctx.comparison.extra_files)
+    _excel_subset(wb, ctx, "エラー対象ファイル", ctx.comparison.errored_files)
     _excel_dir_diff(wb, ctx)
     _excel_errors(wb, ctx)
 
@@ -105,6 +110,7 @@ def _excel_summary(wb: WB, ctx: ReportContext) -> None:
     rows.append(["ハッシュ不一致", len(ctx.comparison.hash_mismatches)])
     rows.append(["ファイル欠落 (一部拠点になし)", len(ctx.comparison.missing_files)])
     rows.append(["余分なファイル (一部拠点のみ)", len(ctx.comparison.extra_files)])
+    rows.append(["エラー対象ファイル (要確認)", len(ctx.comparison.errored_files)])
     rows.append(["フォルダ構造差分", len(ctx.comparison.dir_diffs)])
 
     for r_idx, row in enumerate(rows, 1):
@@ -135,6 +141,7 @@ def _status_fill(status: str) -> Optional[PatternFill]:
         STATUS_HASH_MISMATCH: FILL_HASH_MISMATCH,
         STATUS_PARTIAL_MISSING: FILL_MISSING,
         STATUS_PARTIAL_PRESENT: FILL_PARTIAL,
+        STATUS_ERROR: FILL_ERROR,
     }.get(status)
 
 
@@ -144,7 +151,6 @@ def _write_file_row(
     no: int,
     file_row: FileRow,
     location_names: List[str],
-    distinct_hashes: int,
 ) -> None:
     rel = file_row.relpath
     name = rel.rsplit("/", 1)[-1]
@@ -160,10 +166,25 @@ def _write_file_row(
     if fill is not None:
         status_cell.fill = fill
 
+    # ハッシュ不一致時は「最頻値（過半数）と異なる拠点だけ」赤くする。
+    minority = (
+        minority_hashes(file_row.entries) if file_row.status == STATUS_HASH_MISMATCH else set()
+    )
+
     col = 6
     for loc in location_names:
+        err_msg = file_row.errors.get(loc)
         entry: Optional[FileEntry] = file_row.entries.get(loc)
-        if entry is None:
+        if err_msg is not None:
+            # 読み取り失敗: サイズ列=エラー、ハッシュ列=メッセージ、更新日時列=―
+            size_cell = ws.cell(row=row_idx, column=col, value=ERROR_PLACEHOLDER)
+            msg_cell = ws.cell(row=row_idx, column=col + 1, value=err_msg)
+            mtime_cell = ws.cell(row=row_idx, column=col + 2, value=MISSING_PLACEHOLDER)
+            for c in (size_cell, msg_cell, mtime_cell):
+                c.fill = FILL_ERROR
+            size_cell.alignment = Alignment(horizontal="center")
+            mtime_cell.alignment = Alignment(horizontal="center")
+        elif entry is None:
             for offset in range(3):
                 c = ws.cell(row=row_idx, column=col + offset, value=MISSING_PLACEHOLDER)
                 c.fill = FILL_GRAY
@@ -172,7 +193,7 @@ def _write_file_row(
             ws.cell(row=row_idx, column=col, value=entry.size)
             hash_cell = ws.cell(row=row_idx, column=col + 1, value=entry.hash)
             ws.cell(row=row_idx, column=col + 2, value=entry.mtime.strftime(DATETIME_FMT))
-            if file_row.status == STATUS_HASH_MISMATCH and distinct_hashes > 1:
+            if entry.hash in minority:
                 hash_cell.fill = FILL_HASH_MISMATCH
         col += 3
 
@@ -184,8 +205,7 @@ def _excel_all_files(wb: WB, ctx: ReportContext) -> None:
     _set_header_row(ws, headers)
 
     for i, row in enumerate(ctx.comparison.all_files, 1):
-        distinct = len({e.hash for e in row.entries.values() if e is not None})
-        _write_file_row(ws, i + 1, i, row, loc_names, distinct)
+        _write_file_row(ws, i + 1, i, row, loc_names)
 
     # 列幅
     ws.column_dimensions["A"].width = 6   # No.
@@ -218,8 +238,7 @@ def _excel_subset(wb: WB, ctx: ReportContext, sheet_name: str, rows: List[FileRo
         return
 
     for i, row in enumerate(rows, 1):
-        distinct = len({e.hash for e in row.entries.values() if e is not None})
-        _write_file_row(ws, i + 1, i, row, loc_names, distinct)
+        _write_file_row(ws, i + 1, i, row, loc_names)
 
     ws.column_dimensions["A"].width = 6
     ws.column_dimensions["B"].width = 50
@@ -303,6 +322,7 @@ def write_html(ctx: ReportContext, out_path: Path) -> Path:
     mismatch_html = _html_file_table("ハッシュ不一致", ctx.comparison.hash_mismatches, loc_names)
     missing_html = _html_file_table("ファイル欠落", ctx.comparison.missing_files, loc_names)
     extra_html = _html_file_table("余分なファイル", ctx.comparison.extra_files, loc_names)
+    errored_html = _html_file_table("エラー対象ファイル", ctx.comparison.errored_files, loc_names)
     dir_html = _html_dir_diff(ctx.comparison.dir_diffs, loc_names)
     err_html = _html_errors(ctx.scans)
 
@@ -326,8 +346,9 @@ def write_html(ctx: ReportContext, out_path: Path) -> Path:
     <a href="#mismatch">ハッシュ不一致</a>
     <a href="#missing">ファイル欠落</a>
     <a href="#extra">余分なファイル</a>
+    <a href="#errored">エラー対象ファイル</a>
     <a href="#dirs">フォルダ構造差分</a>
-    <a href="#errors">エラー</a>
+    <a href="#errors">エラー詳細</a>
   </nav>
 </header>
 <main>
@@ -336,6 +357,7 @@ def write_html(ctx: ReportContext, out_path: Path) -> Path:
   {mismatch_html}
   {missing_html}
   {extra_html}
+  {errored_html}
   {dir_html}
   {err_html}
 </main>
@@ -369,8 +391,10 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .status-mismatch { background: #ffc7ce !important; color: #9c0006; font-weight: bold; }
 .status-missing { background: #ffd8a8 !important; color: #9c4500; font-weight: bold; }
 .status-partial { background: #ffe699 !important; color: #7f6000; font-weight: bold; }
+.status-error { background: #f4b084 !important; color: #6a2900; font-weight: bold; }
 .cell-mismatch { background: #ffc7ce !important; }
 .cell-missing { background: #d9d9d9 !important; color: #888; text-align: center; }
+.cell-error { background: #f4b084 !important; color: #6a2900; }
 .summary-table td:first-child { font-weight: bold; width: 240px; background: #f0f3f8; }
 .scroll-wrap { overflow-x: auto; max-width: 100%; }
 .fixed-col-table th:nth-child(2), .fixed-col-table td:nth-child(2) {
@@ -386,6 +410,7 @@ def _status_class(status: str) -> str:
         STATUS_HASH_MISMATCH: "status-mismatch",
         STATUS_PARTIAL_MISSING: "status-missing",
         STATUS_PARTIAL_PRESENT: "status-partial",
+        STATUS_ERROR: "status-error",
     }.get(status, "")
 
 
@@ -395,6 +420,7 @@ def _section_id(title: str) -> str:
         "ハッシュ不一致": "mismatch",
         "ファイル欠落": "missing",
         "余分なファイル": "extra",
+        "エラー対象ファイル": "errored",
     }.get(title, html.escape(title))
 
 
@@ -427,6 +453,7 @@ def _html_summary_section(ctx: ReportContext, elapsed: float) -> str:
         ("ハッシュ不一致", len(ctx.comparison.hash_mismatches)),
         ("ファイル欠落 (一部拠点になし)", len(ctx.comparison.missing_files)),
         ("余分なファイル (一部拠点のみ)", len(ctx.comparison.extra_files)),
+        ("エラー対象ファイル (要確認)", len(ctx.comparison.errored_files)),
         ("フォルダ構造差分", len(ctx.comparison.dir_diffs)),
     ]
     diff_html = "".join(
@@ -476,17 +503,28 @@ def _html_file_table(title: str, rows: List[FileRow], loc_names: List[str]) -> s
             f"<td>{html.escape(ext)}</td>",
             f"<td class='{status_cls}'>{html.escape(row.status)}</td>",
         ]
-        distinct_hashes = len({e.hash for e in row.entries.values() if e is not None})
+        # ハッシュ不一致時は最頻値以外のハッシュだけ強調
+        minority = (
+            minority_hashes(row.entries) if row.status == STATUS_HASH_MISMATCH else set()
+        )
 
         for loc in loc_names:
+            err_msg = row.errors.get(loc)
             entry = row.entries.get(loc)
-            if entry is None:
+            if err_msg is not None:
+                cells.append(f"<td class='cell-error'>{ERROR_PLACEHOLDER}</td>")
+                cells.append(
+                    f"<td class='cell-error' title='{html.escape(err_msg)}'>"
+                    f"{html.escape(err_msg[:60])}</td>"
+                )
+                cells.append(f"<td class='cell-error'>{MISSING_PLACEHOLDER}</td>")
+            elif entry is None:
                 cells.append(f"<td class='cell-missing'>{MISSING_PLACEHOLDER}</td>")
                 cells.append(f"<td class='cell-missing'>{MISSING_PLACEHOLDER}</td>")
                 cells.append(f"<td class='cell-missing'>{MISSING_PLACEHOLDER}</td>")
             else:
                 hash_cls = "hash"
-                if row.status == STATUS_HASH_MISMATCH and distinct_hashes > 1:
+                if entry.hash in minority:
                     hash_cls += " cell-mismatch"
                 cells.append(f"<td class='num'>{entry.size:,}</td>")
                 cells.append(
