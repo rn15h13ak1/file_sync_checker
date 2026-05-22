@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -87,6 +88,11 @@ def run(config: Config, config_path: Path, *, show_progress: bool, log) -> int:
         out_html = out_dir / f"sync-check-{slug}.html"
         write_html(ctx, out_html)
         written.append(out_html)
+        # 安定リンク用: タイムスタンプ無しの最新レポートを上書きで生成する
+        # (ブックマークや自動化スクリプトから常に最新を参照できるようにするため)
+        out_html_latest = out_dir / "sync-check.html"
+        shutil.copy2(out_html, out_html_latest)
+        written.append(out_html_latest)
 
     # コンソールサマリー
     elapsed = (finished_at - started_at).total_seconds()

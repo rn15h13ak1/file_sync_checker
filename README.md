@@ -36,6 +36,7 @@ python /full/path/to/main.py -c /full/path/to/config.yaml
 - `config.yaml` 内の相対パス (`locations[].path`, `output.output_dir`) は **config ファイルのあるディレクトリ** からの相対として解決されます。絶対パスはそのまま使用されます。
 
 レポートは `<output_dir>/sync-check-YYYYMMDD-HHMMSS.{xlsx,html}` に出力されます。
+HTML 出力時は併せて `<output_dir>/sync-check.html` (タイムスタンプ無し・実行毎に上書き) も生成されるため、ブックマークや自動化スクリプトから常に最新レポートを参照できます。
 
 ### 終了コード
 
