@@ -370,11 +370,13 @@ class TestHtml:
         assert "background: inherit" not in body, (
             "sticky 列に background: inherit を使うと透明になる。明示的な色を指定すること"
         )
-        # thead 側
-        assert ".fixed-col-table thead th:nth-child(2)" in body
+        # ファイル名列 (3列目) を sticky 対象とする
+        assert ".fixed-col-table thead th:nth-child(3)" in body
         # tbody 側の odd/even
-        assert ".fixed-col-table tbody tr:nth-child(odd) td:nth-child(2)" in body
-        assert ".fixed-col-table tbody tr:nth-child(even) td:nth-child(2)" in body
+        assert ".fixed-col-table tbody tr:nth-child(odd) td:nth-child(3)" in body
+        assert ".fixed-col-table tbody tr:nth-child(even) td:nth-child(3)" in body
+        # 旧仕様 (相対パス列 = 2 列目) が残っていないこと
+        assert ".fixed-col-table tbody td:nth-child(2)" not in body
 
     def test_page_header_is_not_sticky(
         self, rich_ctx: ReportContext, tmp_path: Path

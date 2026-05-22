@@ -453,17 +453,18 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
    max-height があると thead position:sticky が wrap スクロールに対して機能する。
    行数が少なければそのまま自然な高さで表示される。 */
 .scroll-wrap { overflow: auto; max-width: 100%; max-height: 75vh; }
-/* 相対パス列を左に固定。背景を明示しないと sticky 時に下のセルが透けるため、
+/* ファイル名列 (3列目) を左に固定。横スクロール時に「どのファイルの行か」を
+   常に見えるようにするため。背景を明示しないと sticky 時に下のセルが透けるため、
    zebra に合わせて奇数行=白・偶数行=薄灰の背景を td に直接指定する。
    th 側もヘッダ色を明示し、行ヘッダより前面に配置する。 */
-.fixed-col-table thead th:nth-child(2) {
+.fixed-col-table thead th:nth-child(3) {
   position: sticky; left: 0; z-index: 10; background: #305496;
 }
-.fixed-col-table tbody td:nth-child(2) {
+.fixed-col-table tbody td:nth-child(3) {
   position: sticky; left: 0; z-index: 1;
 }
-.fixed-col-table tbody tr:nth-child(odd) td:nth-child(2) { background: #fff; }
-.fixed-col-table tbody tr:nth-child(even) td:nth-child(2) { background: #f6f8fb; }
+.fixed-col-table tbody tr:nth-child(odd) td:nth-child(3) { background: #fff; }
+.fixed-col-table tbody tr:nth-child(even) td:nth-child(3) { background: #f6f8fb; }
 .empty { color: #888; font-style: italic; padding: 8px; }
 
 /* ===== ファイル行 (クリックでモーダル表示) ===== */
