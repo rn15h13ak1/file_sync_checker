@@ -24,6 +24,18 @@ python main.py --no-progress      # 進捗バーを抑制
 python main.py -v                 # 詳細ログ
 ```
 
+設定ファイルを書き換えずに上書きしたい項目はコマンドラインから指定できます（CI 向け）:
+
+```bash
+python main.py --format html --hash-mode smart -o ./ci-reports
+```
+
+| オプション | 上書きする設定 |
+|---|---|
+| `--format {excel,html,both}` | `output.format` |
+| `-o, --output-dir DIR` | `output.output_dir`（CWD からの相対） |
+| `--hash-mode {always,smart}` | `performance.hash_mode` |
+
 CWD に依存せずフルパスで起動することもできます:
 
 ```bash

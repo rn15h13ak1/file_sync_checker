@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from config import ConfigError, load_config
+from config import ConfigError, apply_overrides, load_config
 
 
 def _write(path: Path, body: str) -> Path:
@@ -244,6 +244,50 @@ locations:
 """)
         with pytest.raises(ConfigError, match="name と path"):
             load_config(cfg)
+
+
+class TestCliOverrides:
+    def _config(self, tmp_path: Path):
+        cfg = _write(tmp_path / "c.yaml", """
+locations:
+  - name: A
+    path: /opt/a
+  - name: B
+    path: /opt/b
+output:
+  format: excel
+  output_dir: ./reports
+performance:
+  hash_mode: always
+""")
+        return load_config(cfg)
+
+    def test_no_overrides_keeps_config(self, tmp_path: Path):
+        config = self._config(tmp_path)
+        assert apply_overrides(config) == config
+
+    def test_format_and_hash_mode_overridden(self, tmp_path: Path):
+        config = apply_overrides(
+            self._config(tmp_path), output_format="html", hash_mode="smart"
+        )
+        assert config.output.format == "html"
+        assert config.performance.hash_mode == "smart"
+        # 他の項目は維持される
+        assert [loc.name for loc in config.locations] == ["A", "B"]
+
+    def test_output_dir_resolved_from_cwd(self, tmp_path: Path, monkeypatch):
+        """設定ファイル内の相対パスと違い、CLI 指定は CWD 基準で解決する。"""
+        monkeypatch.chdir(tmp_path)
+        config = apply_overrides(self._config(tmp_path), output_dir="./out")
+        assert config.output.output_dir == (tmp_path / "out").resolve()
+
+    def test_invalid_format_rejected(self, tmp_path: Path):
+        with pytest.raises(ConfigError, match="--format"):
+            apply_overrides(self._config(tmp_path), output_format="pdf")
+
+    def test_invalid_hash_mode_rejected(self, tmp_path: Path):
+        with pytest.raises(ConfigError, match="--hash-mode"):
+            apply_overrides(self._config(tmp_path), hash_mode="trust_me")
 
 
 class TestRelativePathResolution:

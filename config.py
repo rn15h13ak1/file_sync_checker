@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, List
 
@@ -56,6 +56,46 @@ class Config:
 
 class ConfigError(ValueError):
     pass
+
+
+def apply_overrides(
+    config: Config,
+    *,
+    output_format: str | None = None,
+    output_dir: str | None = None,
+    hash_mode: str | None = None,
+) -> Config:
+    """コマンドラインからの上書きを設定に反映する。
+
+    CI から実行するときに config.yaml を書き換えずに出力先や形式を変えられるようにする。
+    None の項目は設定ファイルの値をそのまま使う。
+    `output_dir` は設定ファイル内の相対パスと違い、CWD からの相対として解決する
+    (コマンドラインに書いたパスは打った場所から見た相対と考えるのが自然なため)。
+    """
+    if output_format is not None and output_format not in SUPPORTED_FORMATS:
+        raise ConfigError(
+            f"--format は {sorted(SUPPORTED_FORMATS)} のいずれかを指定してください "
+            f"(現在: {output_format})"
+        )
+    if hash_mode is not None and hash_mode not in HASH_MODES:
+        raise ConfigError(
+            f"--hash-mode は {sorted(HASH_MODES)} のいずれかを指定してください "
+            f"(現在: {hash_mode})"
+        )
+
+    output = config.output
+    if output_format is not None or output_dir is not None:
+        output = replace(
+            output,
+            format=output_format if output_format is not None else output.format,
+            output_dir=(
+                Path(output_dir).resolve() if output_dir is not None else output.output_dir
+            ),
+        )
+    performance = config.performance
+    if hash_mode is not None:
+        performance = replace(performance, hash_mode=hash_mode)
+    return replace(config, output=output, performance=performance)
 
 
 def _resolve(p: Path, base: Path) -> Path:

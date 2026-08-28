@@ -8,10 +8,16 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from config import Config, ConfigError, load_config
+from config import (
+    SUPPORTED_FORMATS,
+    Config,
+    ConfigError,
+    apply_overrides,
+    load_config,
+)
 from comparator import compare
 from reporter import ReportContext, write_excel, write_html
-from scanner import ScanCancelled, scan_locations
+from scanner import HASH_MODES, ScanCancelled, scan_locations
 from utils import ensure_dir, human_bytes, setup_logging, timestamp_slug
 
 
@@ -35,6 +41,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="詳細ログを出力")
     parser.add_argument("--no-progress", action="store_true", help="進捗バーを無効化")
+    # 以下は設定ファイルの値を上書きする (CI から config.yaml を書き換えずに使うため)
+    parser.add_argument(
+        "--format", dest="output_format", choices=sorted(SUPPORTED_FORMATS), default=None,
+        help="出力形式を上書き (設定: output.format)",
+    )
+    parser.add_argument(
+        "-o", "--output-dir", default=None,
+        help="レポート出力先を上書き (設定: output.output_dir。CWD からの相対)",
+    )
+    parser.add_argument(
+        "--hash-mode", choices=sorted(HASH_MODES), default=None,
+        help="ハッシュ計算範囲を上書き (設定: performance.hash_mode)",
+    )
     return parser.parse_args()
 
 
@@ -172,7 +191,12 @@ def main() -> int:
     log = setup_logging(verbose=args.verbose)
     config_path = Path(args.config) if args.config else _resolve_default_config()
     try:
-        config = load_config(config_path)
+        config = apply_overrides(
+            load_config(config_path),
+            output_format=args.output_format,
+            output_dir=args.output_dir,
+            hash_mode=args.hash_mode,
+        )
     except ConfigError as e:
         log.error("設定エラー: %s", e)
         return EXIT_CONFIG_ERROR
