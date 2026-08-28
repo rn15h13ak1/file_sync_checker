@@ -279,6 +279,26 @@ class TestExcel:
             ws = wb[sheet]
             assert ws.cell(row=2, column=1).value == "該当なし", sheet
 
+    def test_panes_and_autofilter_survive_write_only(
+        self, rich_ctx: ReportContext, tmp_path: Path
+    ):
+        """見出し行の固定とオートフィルタが保存後も残る。
+
+        write_only ではシートビューが行より先に出力されるため、freeze_panes を
+        append より後に設定すると黙って捨てられる。
+        """
+        out = write_excel(rich_ctx, tmp_path / "out.xlsx")
+        from openpyxl import load_workbook
+        wb = load_workbook(out)
+
+        for sheet in ("全ファイル一覧", "ハッシュ不一致", "フォルダ構造差分"):
+            assert wb[sheet].freeze_panes == "C2", sheet
+        assert wb["エラー"].freeze_panes == "A2"
+
+        ws = wb["全ファイル一覧"]
+        # ヘッダー + 5ファイル、3拠点 = 14列
+        assert ws.auto_filter.ref == "A1:N6"
+
     def test_truncates_at_excel_row_limit(self, tmp_path: Path, monkeypatch):
         """行数上限を超えたら切り詰めて注記する。
 

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.workbook.workbook import Workbook as WB
@@ -113,10 +114,10 @@ class ReportContext:
 # Excel
 # ============================================================
 def write_excel(ctx: ReportContext, out_path: Path) -> Path:
-    wb: WB = Workbook()
-    # デフォルトで作成される空シートを削除
-    default_ws = wb.active
-    wb.remove(default_ws)
+    # write_only: 行を書いた端から解放するため、シート全体をメモリに持たない。
+    # 通常モードは 50,000 行 × 3 拠点で約 236MB を使い、行数に比例して増える。
+    # 代わりにセルへのランダムアクセスができないので、各シートは 1 行ずつ append する。
+    wb: WB = Workbook(write_only=True)
 
     _excel_summary(wb, ctx)
     _excel_all_files(wb, ctx)
@@ -131,12 +132,45 @@ def write_excel(ctx: ReportContext, out_path: Path) -> Path:
     return out_path
 
 
-def _set_header_row(ws, headers: List[str]) -> None:
-    for col_idx, h in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col_idx, value=h)
-        cell.fill = FILL_HEADER
-        cell.font = FONT_HEADER
-        cell.alignment = Alignment(horizontal="center", vertical="center")
+def _cell(ws, value, *, fill=None, font=None, align=None):
+    """write_only シート用のセルを作る。
+
+    write_only では ws.cell(row=, column=) が使えないため、
+    書式付きのセルは WriteOnlyCell を組み立てて append する。
+    """
+    c = WriteOnlyCell(ws, value=value)
+    if fill is not None:
+        c.fill = fill
+    if font is not None:
+        c.font = font
+    if align is not None:
+        c.alignment = align
+    return c
+
+
+def _start_table(wb: WB, sheet_name: str, headers: List[str], *, freeze: str = "C2"):
+    """シートを作り、ペイン固定を設定してからヘッダー行を書く。
+
+    write_only ではシートビューが行より先に出力されるため、`freeze_panes` は
+    最初の append より前に設定しないと保存時に捨てられる。
+    """
+    ws = wb.create_sheet(sheet_name)
+    ws.freeze_panes = freeze
+    ws.append([
+        _cell(ws, h, fill=FILL_HEADER, font=FONT_HEADER,
+              align=Alignment(horizontal="center", vertical="center"))
+        for h in headers
+    ])
+    return ws
+
+
+def _finish_table(ws, n_columns: int, n_rows: int) -> None:
+    """オートフィルタの範囲を設定する。
+
+    write_only では ws.dimensions がまだ確定していないため、範囲を自分で組み立てる。
+    """
+    if n_rows > 0:
+        ws.auto_filter.ref = f"A1:{get_column_letter(n_columns)}{n_rows + 1}"
 
 
 def _excel_summary(wb: WB, ctx: ReportContext) -> None:
@@ -171,13 +205,15 @@ def _excel_summary(wb: WB, ctx: ReportContext) -> None:
     rows.append(["エラー対象ファイル (要確認)", len(ctx.comparison.errored_files)])
     rows.append(["フォルダ構造差分", len(ctx.comparison.dir_diffs)])
 
+    bold = Font(bold=True)
     for r_idx, row in enumerate(rows, 1):
-        for c_idx, val in enumerate(row, 1):
-            cell = ws.cell(row=r_idx, column=c_idx, value=val)
-            if r_idx == 1 or (isinstance(val, str) and val in {"拠点", "差分種別", "項目"}):
-                # ヘッダ行の見た目
-                if c_idx <= len(row):
-                    cell.font = Font(bold=True)
+        # 見出し行 (1行目と各表の先頭行) だけ太字にする
+        is_header = r_idx == 1 or (
+            row and isinstance(row[0], str) and row[0] in {"拠点", "差分種別", "項目"}
+        )
+        ws.append([
+            _cell(ws, val, font=bold) if is_header else val for val in row
+        ])
 
     ws.column_dimensions["A"].width = 32
     ws.column_dimensions["B"].width = 60
@@ -203,61 +239,57 @@ def _status_fill(status: str) -> Optional[PatternFill]:
     }.get(status)
 
 
-def _write_file_row(
-    ws,
-    row_idx: int,
-    no: int,
-    file_row: FileRow,
-    location_names: List[str],
-) -> None:
+def _write_file_row(ws, no: int, file_row: FileRow, location_names: List[str]) -> None:
     rel = file_row.relpath
     name = rel.rsplit("/", 1)[-1]
     ext = Path(name).suffix
+    center = Alignment(horizontal="center")
 
-    ws.cell(row=row_idx, column=1, value=no)
-    ws.cell(row=row_idx, column=2, value=rel)
-    ws.cell(row=row_idx, column=3, value=name)
-    ws.cell(row=row_idx, column=4, value=ext)
-
-    status_cell = ws.cell(row=row_idx, column=5, value=file_row.status)
-    fill = _status_fill(file_row.status)
-    if fill is not None:
-        status_cell.fill = fill
+    cells = [
+        no,
+        rel,
+        name,
+        ext,
+        _cell(ws, file_row.status, fill=_status_fill(file_row.status)),
+    ]
 
     # ハッシュ不一致時は「最頻値（過半数）と異なる拠点だけ」赤くする。
     # ハッシュ未計算 (サイズ相違だけで不一致が確定) の場合はサイズ列を強調する。
     minority, minority_size = _minority_targets(file_row)
 
-    col = 6
     for loc in location_names:
         err_msg = file_row.errors.get(loc)
         entry: Optional[FileEntry] = file_row.entries.get(loc)
         if err_msg is not None:
             # 読み取り失敗: サイズ列=エラー、ハッシュ列=メッセージ、更新日時列=―
-            size_cell = ws.cell(row=row_idx, column=col, value=ERROR_PLACEHOLDER)
-            msg_cell = ws.cell(row=row_idx, column=col + 1, value=err_msg)
-            mtime_cell = ws.cell(row=row_idx, column=col + 2, value=MISSING_PLACEHOLDER)
-            for c in (size_cell, msg_cell, mtime_cell):
-                c.fill = FILL_ERROR
-            size_cell.alignment = Alignment(horizontal="center")
-            mtime_cell.alignment = Alignment(horizontal="center")
+            cells.extend([
+                _cell(ws, ERROR_PLACEHOLDER, fill=FILL_ERROR, align=center),
+                _cell(ws, err_msg, fill=FILL_ERROR),
+                _cell(ws, MISSING_PLACEHOLDER, fill=FILL_ERROR, align=center),
+            ])
         elif entry is None:
-            for offset in range(3):
-                c = ws.cell(row=row_idx, column=col + offset, value=MISSING_PLACEHOLDER)
-                c.fill = FILL_GRAY
-                c.alignment = Alignment(horizontal="center")
-        else:
-            size_cell = ws.cell(row=row_idx, column=col, value=entry.size)
-            hash_cell = ws.cell(
-                row=row_idx, column=col + 1,
-                value=entry.hash if entry.hash is not None else SKIPPED_HASH_PLACEHOLDER,
+            cells.extend(
+                _cell(ws, MISSING_PLACEHOLDER, fill=FILL_GRAY, align=center)
+                for _ in range(3)
             )
-            ws.cell(row=row_idx, column=col + 2, value=entry.mtime.strftime(DATETIME_FMT))
-            if entry.hash is not None and entry.hash in minority:
-                hash_cell.fill = FILL_HASH_MISMATCH
-            if entry.size in minority_size:
-                size_cell.fill = FILL_HASH_MISMATCH
-        col += 3
+        else:
+            cells.extend([
+                _cell(
+                    ws, entry.size,
+                    fill=FILL_HASH_MISMATCH if entry.size in minority_size else None,
+                ),
+                _cell(
+                    ws,
+                    entry.hash if entry.hash is not None else SKIPPED_HASH_PLACEHOLDER,
+                    fill=(
+                        FILL_HASH_MISMATCH
+                        if entry.hash is not None and entry.hash in minority
+                        else None
+                    ),
+                ),
+                entry.mtime.strftime(DATETIME_FMT),
+            ])
+    ws.append(cells)
 
 
 def _truncate_for_excel(rows: List[FileRow]) -> tuple[List[FileRow], int]:
@@ -271,28 +303,16 @@ def _truncate_for_excel(rows: List[FileRow]) -> tuple[List[FileRow], int]:
     return rows[:EXCEL_MAX_DATA_ROWS], len(rows) - EXCEL_MAX_DATA_ROWS
 
 
-def _write_truncation_note(ws, row_idx: int, omitted: int) -> None:
-    cell = ws.cell(
-        row=row_idx, column=1,
-        value=f"... 他 {omitted:,} 件は Excel の行数上限のため省略しました "
-              f"(全件は HTML レポートを参照してください)",
-    )
-    cell.font = Font(bold=True, color="9C0006")
+def _write_truncation_note(ws, omitted: int) -> None:
+    ws.append([_cell(
+        ws,
+        f"... 他 {omitted:,} 件は Excel の行数上限のため省略しました "
+        f"(全件は HTML レポートを参照してください)",
+        font=Font(bold=True, color="9C0006"),
+    )])
 
 
-def _excel_all_files(wb: WB, ctx: ReportContext) -> None:
-    ws = wb.create_sheet("全ファイル一覧")
-    loc_names = ctx.comparison.location_names
-    headers = _file_columns_for(loc_names)
-    _set_header_row(ws, headers)
-
-    rows, omitted = _truncate_for_excel(ctx.comparison.all_files)
-    for i, row in enumerate(rows, 1):
-        _write_file_row(ws, i + 1, i, row, loc_names)
-    if omitted:
-        _write_truncation_note(ws, len(rows) + 2, omitted)
-
-    # 列幅
+def _set_file_column_widths(ws, loc_names: List[str]) -> None:
     ws.column_dimensions["A"].width = 6   # No.
     ws.column_dimensions["B"].width = 50  # 相対パス
     ws.column_dimensions["C"].width = 28  # ファイル名
@@ -305,75 +325,75 @@ def _excel_all_files(wb: WB, ctx: ReportContext) -> None:
         ws.column_dimensions[get_column_letter(base + 2)].width = 20  # 更新日時
         base += 3
 
-    # 固定: 1行目 + 相対パス列 (B列まで固定 = C列以降スクロール)
-    ws.freeze_panes = "C2"
 
-    # オートフィルタ
-    ws.auto_filter.ref = ws.dimensions
+def _excel_all_files(wb: WB, ctx: ReportContext) -> None:
+    loc_names = ctx.comparison.location_names
+    headers = _file_columns_for(loc_names)
+    # 固定: 1行目 + 相対パス列 (B列まで固定 = C列以降スクロール)
+    ws = _start_table(wb, "全ファイル一覧", headers)
+
+    rows, omitted = _truncate_for_excel(ctx.comparison.all_files)
+    for i, row in enumerate(rows, 1):
+        _write_file_row(ws, i, row, loc_names)
+    if omitted:
+        _write_truncation_note(ws, omitted)
+
+    _set_file_column_widths(ws, loc_names)
+    _finish_table(ws, len(headers), len(rows))
 
 
 def _excel_subset(wb: WB, ctx: ReportContext, sheet_name: str, rows: List[FileRow]) -> None:
-    ws = wb.create_sheet(sheet_name)
     loc_names = ctx.comparison.location_names
     headers = _file_columns_for(loc_names)
-    _set_header_row(ws, headers)
+    ws = _start_table(wb, sheet_name, headers)
 
     if not rows:
-        ws.cell(row=2, column=1, value="該当なし")
+        ws.append(["該当なし"])
         return
 
     rows, omitted = _truncate_for_excel(rows)
     for i, row in enumerate(rows, 1):
-        _write_file_row(ws, i + 1, i, row, loc_names)
+        _write_file_row(ws, i, row, loc_names)
     if omitted:
-        _write_truncation_note(ws, len(rows) + 2, omitted)
+        _write_truncation_note(ws, omitted)
 
-    ws.column_dimensions["A"].width = 6
-    ws.column_dimensions["B"].width = 50
-    ws.column_dimensions["C"].width = 28
-    ws.column_dimensions["D"].width = 8
-    ws.column_dimensions["E"].width = 14
-    base = 6
-    for _ in loc_names:
-        ws.column_dimensions[get_column_letter(base)].width = 12
-        ws.column_dimensions[get_column_letter(base + 1)].width = 16
-        ws.column_dimensions[get_column_letter(base + 2)].width = 20
-        base += 3
-    ws.freeze_panes = "C2"
-    ws.auto_filter.ref = ws.dimensions
+    _set_file_column_widths(ws, loc_names)
+    _finish_table(ws, len(headers), len(rows))
 
 
 def _excel_dir_diff(wb: WB, ctx: ReportContext) -> None:
-    ws = wb.create_sheet("フォルダ構造差分")
     loc_names = ctx.comparison.location_names
     headers = ["No.", "相対パス"] + loc_names
-    _set_header_row(ws, headers)
+    ws = _start_table(wb, "フォルダ構造差分", headers)
 
     if not ctx.comparison.dir_diffs:
-        ws.cell(row=2, column=1, value="該当なし")
+        ws.append(["該当なし"])
         return
 
+    center = Alignment(horizontal="center")
     for i, d in enumerate(ctx.comparison.dir_diffs, 1):
-        ws.cell(row=i + 1, column=1, value=i)
-        ws.cell(row=i + 1, column=2, value=d.relpath)
-        for j, loc in enumerate(loc_names):
-            v = "○" if d.presence[loc] else MISSING_PLACEHOLDER
-            cell = ws.cell(row=i + 1, column=3 + j, value=v)
-            cell.alignment = Alignment(horizontal="center")
-            if not d.presence[loc]:
-                cell.fill = FILL_GRAY
+        cells = [i, d.relpath]
+        for loc in loc_names:
+            present = d.presence[loc]
+            cells.append(_cell(
+                ws,
+                "○" if present else MISSING_PLACEHOLDER,
+                fill=None if present else FILL_GRAY,
+                align=center,
+            ))
+        ws.append(cells)
 
     ws.column_dimensions["A"].width = 6
     ws.column_dimensions["B"].width = 60
     for j in range(len(loc_names)):
         ws.column_dimensions[get_column_letter(3 + j)].width = 12
-    ws.freeze_panes = "C2"
-    ws.auto_filter.ref = ws.dimensions
+    _finish_table(ws, len(headers), len(ctx.comparison.dir_diffs))
 
 
 def _excel_errors(wb: WB, ctx: ReportContext) -> None:
-    ws = wb.create_sheet("エラー")
-    _set_header_row(ws, ["No.", "拠点", "相対パス", "メッセージ"])
+    ws = _start_table(
+        wb, "エラー", ["No.", "拠点", "相対パス", "メッセージ"], freeze="A2"
+    )
 
     rows: List[tuple] = []
     for s in ctx.scans:
@@ -381,21 +401,17 @@ def _excel_errors(wb: WB, ctx: ReportContext) -> None:
             rows.append((s.location_name, e.relpath, e.message))
 
     if not rows:
-        ws.cell(row=2, column=1, value="該当なし")
+        ws.append(["該当なし"])
         return
 
     for i, (loc, rel, msg) in enumerate(rows, 1):
-        ws.cell(row=i + 1, column=1, value=i)
-        ws.cell(row=i + 1, column=2, value=loc)
-        ws.cell(row=i + 1, column=3, value=rel)
-        ws.cell(row=i + 1, column=4, value=msg)
+        ws.append([i, loc, rel, msg])
 
     ws.column_dimensions["A"].width = 6
     ws.column_dimensions["B"].width = 16
     ws.column_dimensions["C"].width = 50
     ws.column_dimensions["D"].width = 80
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
+    _finish_table(ws, 4, len(rows))
 
 
 # ============================================================
