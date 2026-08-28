@@ -10,7 +10,7 @@ import pytest
 import yaml
 
 from config import load_config
-from main import EXIT_DIFF, EXIT_OK, EXIT_SCAN_ERROR, run
+from main import EXIT_DIFF, EXIT_OK, EXIT_SCAN_ERROR, EXIT_UNEXPECTED, run
 
 
 def _make_locations(tmp_path: Path) -> tuple[Path, Path]:
@@ -77,6 +77,40 @@ class TestExitCodes:
             assert rc == EXIT_SCAN_ERROR
         finally:
             locked.chmod(0o600)
+
+
+class TestUnexpectedError:
+    def test_unexpected_exception_gets_its_own_exit_code(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """予期しない例外を「差分あり」と同じ 1 で返さない。
+
+        素通りさせるとトレースバックのまま終了コード 1 になり、
+        CI からは差分が出ただけに見えてしまう。
+        """
+        import main as main_mod
+
+        cfg_path = _write_config(tmp_path, "html")
+        monkeypatch.setattr(
+            sys, "argv", ["main.py", "-c", str(cfg_path), "--no-progress"]
+        )
+
+        def boom(*a, **k):
+            raise RuntimeError("レポート生成に失敗")
+
+        monkeypatch.setattr(main_mod, "write_html", boom)
+        assert main_mod.main() == EXIT_UNEXPECTED
+        capsys.readouterr()
+
+    def test_normal_run_is_unaffected(self, tmp_path, monkeypatch, capsys):
+        import main as main_mod
+
+        cfg_path = _write_config(tmp_path, "html")
+        monkeypatch.setattr(
+            sys, "argv", ["main.py", "-c", str(cfg_path), "--no-progress"]
+        )
+        assert main_mod.main() == EXIT_OK
+        capsys.readouterr()
 
 
 class TestHtmlAliasOutput:

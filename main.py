@@ -28,6 +28,7 @@ EXIT_OK = 0
 EXIT_DIFF = 1           # 差分あり (スキャン自体は完走)
 EXIT_CONFIG_ERROR = 2
 EXIT_SCAN_ERROR = 3     # 読み取り失敗あり = スキャンが不完全
+EXIT_UNEXPECTED = 4     # 予期しない例外 (レポート生成失敗など)
 EXIT_INTERRUPTED = 130
 
 
@@ -214,6 +215,11 @@ def main() -> int:
     except (KeyboardInterrupt, ScanCancelled):
         log.warning("中断されました")
         return EXIT_INTERRUPTED
+    except Exception:
+        # 素通りさせるとトレースバックのまま終了コード 1 になり、
+        # 「差分あり」と区別できない。原因は追えるようログには残す。
+        log.exception("予期しないエラーで中断しました")
+        return EXIT_UNEXPECTED
 
 
 if __name__ == "__main__":
