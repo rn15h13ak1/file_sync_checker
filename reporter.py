@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterator, List, Optional
 
 from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
@@ -418,21 +418,23 @@ def _excel_errors(wb: WB, ctx: ReportContext) -> None:
 # HTML
 # ============================================================
 def write_html(ctx: ReportContext, out_path: Path) -> Path:
+    """HTML レポートを書き出す。
+
+    レポート全体を 1 つの文字列に組み立てると、行数に比例してメモリを食う
+    (50,000 行 × 3 拠点でピーク約 500MB)。断片を順にファイルへ書き出す。
+    """
+    with out_path.open("w", encoding="utf-8") as f:
+        for chunk in _iter_html_document(ctx):
+            f.write(chunk)
+    return out_path
+
+
+def _iter_html_document(ctx: ReportContext) -> Iterator[str]:
     elapsed = (ctx.finished_at - ctx.started_at).total_seconds()
     loc_names = ctx.comparison.location_names
-
-    summary_html = _html_summary_section(ctx, elapsed)
-    all_files_html = _html_file_table("全ファイル一覧", ctx.comparison.all_files, loc_names)
-    mismatch_html = _html_file_table("ハッシュ不一致", ctx.comparison.hash_mismatches, loc_names)
-    missing_html = _html_file_table("ファイル欠落", ctx.comparison.missing_files, loc_names)
-    extra_html = _html_file_table("余分なファイル", ctx.comparison.extra_files, loc_names)
-    errored_html = _html_file_table("エラー対象ファイル", ctx.comparison.errored_files, loc_names)
-    dir_html = _html_dir_diff(ctx.comparison.dir_diffs, loc_names)
-    err_html = _html_errors(ctx.scans)
-    report_data = _report_data_json(ctx)
-
     title = f"File Sync Check Report - {ctx.started_at.strftime(DATETIME_FMT)}"
-    body = f"""
+
+    yield f"""
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -457,14 +459,19 @@ def write_html(ctx: ReportContext, out_path: Path) -> Path:
   </nav>
 </header>
 <main>
-  {summary_html}
-  {all_files_html}
-  {mismatch_html}
-  {missing_html}
-  {extra_html}
-  {errored_html}
-  {dir_html}
-  {err_html}
+  """
+    yield _html_summary_section(ctx, elapsed)
+    for section_title, rows in (
+        ("全ファイル一覧", ctx.comparison.all_files),
+        ("ハッシュ不一致", ctx.comparison.hash_mismatches),
+        ("ファイル欠落", ctx.comparison.missing_files),
+        ("余分なファイル", ctx.comparison.extra_files),
+        ("エラー対象ファイル", ctx.comparison.errored_files),
+    ):
+        yield from _iter_html_file_table(section_title, rows, loc_names)
+    yield _html_dir_diff(ctx.comparison.dir_diffs, loc_names)
+    yield _html_errors(ctx.scans)
+    yield """
 </main>
 <dialog id="detail-modal" aria-labelledby="detail-modal-title">
   <div class="modal-header">
@@ -477,7 +484,9 @@ def write_html(ctx: ReportContext, out_path: Path) -> Path:
   </div>
 </dialog>
 <script type="application/json" id="report-data">
-{report_data}
+"""
+    yield from _iter_report_data_json(ctx)
+    yield f"""
 </script>
 <script>
 {_HTML_SCRIPT}
@@ -485,8 +494,6 @@ def write_html(ctx: ReportContext, out_path: Path) -> Path:
 </body>
 </html>
 """
-    out_path.write_text(body, encoding="utf-8")
-    return out_path
 
 
 _HTML_STYLE = """
@@ -914,8 +921,59 @@ def _html_summary_section(ctx: ReportContext, elapsed: float) -> str:
 """
 
 
-def _report_data_json(ctx: ReportContext) -> str:
-    """行クリック時の詳細表示に使うデータを JSON 文字列で返す。
+def _json_chunk(value) -> str:
+    """JSON 断片を出力用にエンコードする。
+
+    `</script>` でブロックが閉じられるのを防ぐため '<' をエスケープする。
+    ensure_ascii=False で日本語パスをそのまま出す (ドキュメントは UTF-8)。
+    """
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).replace(
+        "<", "\\u003c"
+    )
+
+
+def _iter_report_data_json(ctx: ReportContext) -> Iterator[str]:
+    """詳細表示用データを JSON として少しずつ書き出す。
+
+    全行分を 1 つの dict に組み立ててから dumps すると、行数に比例して
+    メモリを食う。行ごとにエンコードして流す。
+    """
+    yield "{"
+    yield f'"locations":{_json_chunk(_report_locations(ctx))},'
+    yield f'"statusClasses":{_json_chunk(_STATUS_CLASSES)},'
+    yield '"rows":{'
+    for i, (key, data) in enumerate(_iter_report_rows(ctx)):
+        if i:
+            yield ","
+        yield f"{_json_chunk(key)}:{_json_chunk(data)}"
+    yield "}}"
+
+
+_STATUS_CLASSES = {
+    STATUS_OK: "status-ok",
+    STATUS_HASH_MISMATCH: "status-mismatch",
+    STATUS_PARTIAL_MISSING: "status-missing",
+    STATUS_PARTIAL_PRESENT: "status-partial",
+    STATUS_ERROR: "status-error",
+}
+
+
+def _report_locations(ctx: ReportContext) -> List[dict]:
+    """拠点ごとの正規化済みルートとセパレータ。
+
+    フルパスはブラウザ側が root + sep + 相対パスで組み立てるため、
+    ルートの正規化は拠点あたり 1 回で済む。
+    """
+    roots = {s.location_name: str(s.root) for s in ctx.scans}
+    locations = []
+    for name in ctx.comparison.location_names:
+        norm_root, sep = _normalize_root(roots.get(name, ""))
+        locations.append({"name": name, "root": norm_root, "sep": sep})
+    return locations
+
+
+def _iter_report_rows(ctx: ReportContext) -> Iterator[tuple]:
+    """詳細表示用の (相対パス, 行データ) を 1 行ずつ返す。
 
     行ごとに詳細 HTML を組み立てて data 属性に埋め込むと、拠点数 × 行数分のマークアップが
     そのまま出力に乗る (実測: 1,000 ファイル × 3 拠点で HTML 6.7MB のうち 87% が詳細属性)。
@@ -924,21 +982,13 @@ def _report_data_json(ctx: ReportContext) -> str:
     そこで相対パスをキーにしたデータブロック 1 つに集約し、詳細 DOM の組み立ては
     ブラウザ側 (`_HTML_SCRIPT`) に任せる。重複はキーで自然に解消される。
 
-    形式 (バイト数を抑えるため短いキー・拠点順の配列を使う):
-        locations:     [{name, root, sep}, ...]  root/sep は拠点ごとに正規化済み
-        statusClasses: {状態ラベル: CSS クラス}
-        rows: {相対パス: {s: 状態, c: [[size, hash, mtime] | null, ...],
-                          x: [エラーメッセージ | null, ...]  ← エラーが無い行では省略}}
+    行データの形式 (バイト数を抑えるため短いキー・拠点順の配列を使う):
+        {s: 状態,
+         c: [[size, hash, mtime] | null, ...],
+         x: [エラーメッセージ | null, ...]   ← エラーが無い行では省略,
+         p: [拠点ごとの実際の相対パス, ...]  ← 表示用パスと同じなら省略}
     """
     loc_names = ctx.comparison.location_names
-    roots = {s.location_name: str(s.root) for s in ctx.scans}
-
-    locations = []
-    for name in loc_names:
-        norm_root, sep = _normalize_root(roots.get(name, ""))
-        locations.append({"name": name, "root": norm_root, "sep": sep})
-
-    rows: Dict[str, dict] = {}
     for row in ctx.comparison.all_files:
         cells: List[Optional[list]] = []
         errs: List[Optional[str]] = []
@@ -957,37 +1007,24 @@ def _report_data_json(ctx: ReportContext) -> str:
         reals = [row.real_relpaths.get(loc) for loc in loc_names]
         if any(r is not None and r != row.relpath for r in reals):
             data["p"] = reals
-        rows[row.relpath] = data
-
-    payload = {
-        "locations": locations,
-        "statusClasses": {
-            STATUS_OK: "status-ok",
-            STATUS_HASH_MISMATCH: "status-mismatch",
-            STATUS_PARTIAL_MISSING: "status-missing",
-            STATUS_PARTIAL_PRESENT: "status-partial",
-            STATUS_ERROR: "status-error",
-        },
-        "rows": rows,
-    }
-    # `</script>` でブロックが閉じられるのを防ぐため '<' をエスケープする。
-    # ensure_ascii=False で日本語パスをそのまま出す (ドキュメントは UTF-8)。
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
+        yield row.relpath, data
 
 
-def _html_file_table(
+def _iter_html_file_table(
     title: str,
     rows: List[FileRow],
     loc_names: List[str],
-) -> str:
+) -> Iterator[str]:
+    """ファイル一覧セクションを行単位で少しずつ生成する。"""
     sid = _section_id(title)
     if not rows:
-        return f"""
+        yield f"""
 <section id="{sid}">
   <h2>{html.escape(title)}</h2>
   <p class="empty">該当なし</p>
 </section>
 """
+        return
 
     headers = ["No.", "相対パス", "ファイル名", "拡張子", "状態"]
     for n in loc_names:
@@ -995,7 +1032,13 @@ def _html_file_table(
 
     head_html = "".join(f"<th>{html.escape(h)}</th>" for h in headers)
 
-    body_lines: List[str] = []
+    yield f"""
+<section id="{sid}">
+  <h2>{html.escape(title)} ({len(rows):,} 件)</h2>
+  <div class="scroll-wrap"><table class="fixed-col-table">
+    <thead><tr>{head_html}</tr></thead>
+    <tbody>"""
+
     for i, row in enumerate(rows, 1):
         name = row.relpath.rsplit("/", 1)[-1]
         ext = Path(name).suffix
@@ -1043,19 +1086,14 @@ def _html_file_table(
                     )
                 cells.append(f"<td>{html.escape(entry.mtime.strftime(DATETIME_FMT))}</td>")
         # 詳細は relpath をキーに JSON ブロック (#report-data) から JS が引く
-        body_lines.append(
+        yield (
             f'<tr class="file-row" '
             f'data-relpath="{html.escape(row.relpath, quote=True)}">'
             + "".join(cells)
             + "</tr>"
         )
 
-    return f"""
-<section id="{sid}">
-  <h2>{html.escape(title)} ({len(rows):,} 件)</h2>
-  <div class="scroll-wrap"><table class="fixed-col-table">
-    <thead><tr>{head_html}</tr></thead>
-    <tbody>{"".join(body_lines)}</tbody>
+    yield """</tbody>
   </table></div>
 </section>
 """
