@@ -825,6 +825,49 @@ class TestHtml:
         per_row = out.stat().st_size / n
         assert per_row < 2048, f"1 行あたり {per_row:.0f}B — 詳細データが重複していないか確認"
 
+    @pytest.mark.parametrize(
+        "relpath, expected",
+        [
+            # XML に書けない制御文字。openpyxl が例外を投げてレポートが全滅していた
+            ("資料\x07ベル.docx", "資料\\x07ベル.docx"),
+            # 不正な UTF-8 のファイル名 (surrogateescape)。
+            # HTML の書き出しが UnicodeEncodeError、Excel は壊れた xlsx を吐いていた
+            ("資料\udcff壊れ.docx", "資料\\udcff壊れ.docx"),
+            ("報告\x01\udcfe.docx", "報告\\x01\\udcfe.docx"),
+        ],
+    )
+    def test_unrepresentable_filenames_do_not_break_the_report(
+        self, tmp_path: Path, relpath: str, expected: str
+    ):
+        """出力できない文字を含む名前でも、レポートを落とさず見える表記で出す。
+
+        共有フォルダにはレガシー機器が付けた名前や文字コード不一致のファイルが
+        実在する。1 ファイルのためにレポート全体を失うほうが困る。
+        """
+        entry = make_entry("a" * 64)
+        a = make_scan("拠点A", files={relpath: entry})
+        b = make_scan("拠点B", files={relpath: entry})
+        ctx = ReportContext(
+            started_at=datetime(2026, 1, 1),
+            finished_at=datetime(2026, 1, 1),
+            config_path=tmp_path / "c.yaml",
+            scans=[a, b],
+            comparison=compare([a, b]),
+        )
+
+        # HTML: 生成でき、表の照合キーと詳細データのキーが一致する
+        out = write_html(ctx, tmp_path / "out.html")
+        body = out.read_text(encoding="utf-8")
+        data = _extract_report_data(out)
+        assert list(data["rows"]) == [expected]
+        attr = re.search(r'data-relpath="([^"]*)"', body).group(1)
+        assert html_mod.unescape(attr) == expected, "表とJSONでキーが食い違うと詳細が引けない"
+
+        # Excel: 生成でき、読み戻せる (壊れた xlsx を吐かない)
+        xlsx = write_excel(ctx, tmp_path / "out.xlsx")
+        from openpyxl import load_workbook
+        assert load_workbook(xlsx)["全ファイル一覧"].cell(row=2, column=2).value == expected
+
     def test_html_escapes_special_chars_in_paths(self, tmp_path: Path):
         """パス名に <script> を混ぜても素通りしないこと (HTMLエスケープ)。"""
         a = make_scan("A", files={"<script>.txt": make_entry("h")})

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +39,34 @@ DATETIME_FMT = "%Y-%m-%d %H:%M:%S"
 # Excel の 1 シートあたりの行数上限 (1,048,576)。
 # ヘッダー行と末尾の省略注記行を除いた分だけデータ行に使える。
 EXCEL_MAX_DATA_ROWS = 1_048_576 - 2
+
+# レポートにそのまま載せられない文字。
+#   \x00-\x1f (改行・タブを除く): XML 1.0 に書けず openpyxl が例外を投げる。
+#   \ud800-\udfff: 不正な UTF-8 のファイル名を Python が surrogateescape で
+#       返したもの。UTF-8 にエンコードできず、HTML の書き出しが例外になる。
+#       Excel は書けてしまうが、生成された xlsx が壊れて開けなくなる。
+# 共有フォルダにはレガシー機器が付けた名前や文字コード不一致のファイルが実在するため、
+# 1 ファイルでレポート全体を失わないよう、見える表記に置換して出力を続ける。
+_UNSAFE_TEXT_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff]")
+
+
+def _sanitize(text: str) -> str:
+    """出力できない文字を `\\x07` / `\\udcff` のような見える表記に置き換える。
+
+    置換後の文字列は Excel・HTML の双方で同じになる必要がある
+    (HTML では行の照合キーとして使うため、表と詳細データで食い違うと
+    詳細が引けなくなる)。
+    """
+    def _escape(m: "re.Match[str]") -> str:
+        code = ord(m.group())
+        return f"\\x{code:02x}" if code < 0x20 else f"\\u{code:04x}"
+
+    return _UNSAFE_TEXT_RE.sub(_escape, text)
+
+
+def _xl(value):
+    """Excel セルに入れる値を整える (文字列以外はそのまま)。"""
+    return _sanitize(value) if isinstance(value, str) else value
 
 
 def _minority_targets(row: FileRow) -> tuple[set, set]:
@@ -138,7 +167,7 @@ def _cell(ws, value, *, fill=None, font=None, align=None):
     write_only では ws.cell(row=, column=) が使えないため、
     書式付きのセルは WriteOnlyCell を組み立てて append する。
     """
-    c = WriteOnlyCell(ws, value=value)
+    c = WriteOnlyCell(ws, value=_xl(value))
     if fill is not None:
         c.fill = fill
     if font is not None:
@@ -212,7 +241,7 @@ def _excel_summary(wb: WB, ctx: ReportContext) -> None:
             row and isinstance(row[0], str) and row[0] in {"拠点", "差分種別", "項目"}
         )
         ws.append([
-            _cell(ws, val, font=bold) if is_header else val for val in row
+            _cell(ws, val, font=bold) if is_header else _xl(val) for val in row
         ])
 
     ws.column_dimensions["A"].width = 32
@@ -247,9 +276,9 @@ def _write_file_row(ws, no: int, file_row: FileRow, location_names: List[str]) -
 
     cells = [
         no,
-        rel,
-        name,
-        ext,
+        _xl(rel),
+        _xl(name),
+        _xl(ext),
         _cell(ws, file_row.status, fill=_status_fill(file_row.status)),
     ]
 
@@ -372,7 +401,7 @@ def _excel_dir_diff(wb: WB, ctx: ReportContext) -> None:
 
     center = Alignment(horizontal="center")
     for i, d in enumerate(ctx.comparison.dir_diffs, 1):
-        cells = [i, d.relpath]
+        cells = [i, _xl(d.relpath)]
         for loc in loc_names:
             present = d.presence[loc]
             cells.append(_cell(
@@ -405,7 +434,7 @@ def _excel_errors(wb: WB, ctx: ReportContext) -> None:
         return
 
     for i, (loc, rel, msg) in enumerate(rows, 1):
-        ws.append([i, loc, rel, msg])
+        ws.append([i, _xl(loc), _xl(rel), _xl(msg)])
 
     ws.column_dimensions["A"].width = 6
     ws.column_dimensions["B"].width = 16
@@ -943,6 +972,7 @@ def _path_cell(value: str) -> str:
     末尾を省略する必要がない。省略するとフルパスを確認する手段が無くなる
     (ファイル行と違ってモーダルが無いため)。
     """
+    value = _sanitize(value)
     return (
         f"<td class='wrap-path'>{html.escape(value)}"
         f"<button type='button' data-copy=\"{html.escape(value, quote=True)}\" "
@@ -970,7 +1000,7 @@ def _html_summary_section(ctx: ReportContext, elapsed: float) -> str:
         total_size = sum(f.size for f in s.files.values())
         loc_rows.append(
             "<tr>"
-            f"<td>{html.escape(s.location_name)}</td>"
+            f"<td>{html.escape(_sanitize(s.location_name))}</td>"
             f"{_path_cell(str(s.root))}"
             f"<td class='num'>{len(s.files):,}</td>"
             f"<td class='num'>{html.escape(human_bytes(total_size))}</td>"
@@ -1051,7 +1081,9 @@ def _report_locations(ctx: ReportContext) -> List[dict]:
     locations = []
     for name in ctx.comparison.location_names:
         norm_root, sep = _normalize_root(roots.get(name, ""))
-        locations.append({"name": name, "root": norm_root, "sep": sep})
+        locations.append(
+            {"name": _sanitize(name), "root": _sanitize(norm_root), "sep": sep}
+        )
     return locations
 
 
@@ -1084,13 +1116,17 @@ def _iter_report_rows(ctx: ReportContext) -> Iterator[tuple]:
             errs.append(row.errors.get(loc))
         data: dict = {"s": row.status, "c": cells}
         if any(e is not None for e in errs):
-            data["x"] = errs
+            data["x"] = [_sanitize(e) if e is not None else None for e in errs]
         # 拠点ごとに実際のファイル名が違う場合 (Unicode 正規化形・大小文字) のみ、
         # フルパス組み立て用の相対パスを持たせる。通常は表示用パスと同じなので省略する。
-        reals = [row.real_relpaths.get(loc) for loc in loc_names]
-        if any(r is not None and r != row.relpath for r in reals):
+        relpath = _sanitize(row.relpath)
+        reals = [
+            _sanitize(r) if (r := row.real_relpaths.get(loc)) is not None else None
+            for loc in loc_names
+        ]
+        if any(r is not None and r != relpath for r in reals):
             data["p"] = reals
-        yield row.relpath, data
+        yield relpath, data
 
 
 def _iter_html_file_table(
@@ -1143,12 +1179,14 @@ def _iter_html_file_table(
     <tbody>"""
 
     for i, row in enumerate(rows, 1):
-        name = row.relpath.rsplit("/", 1)[-1]
+        # 表と詳細データで同じ文字列になるよう、どちらも _sanitize を通す
+        relpath = _sanitize(row.relpath)
+        name = relpath.rsplit("/", 1)[-1]
         ext = Path(name).suffix
         status_cls = _status_class(row.status)
         cells: List[str] = [
             f"<td class='num'>{i}</td>",
-            f"<td title='{html.escape(row.relpath)}'>{html.escape(row.relpath)}</td>",
+            f"<td title='{html.escape(relpath)}'>{html.escape(relpath)}</td>",
             f"<td>{html.escape(name)}</td>",
             f"<td>{html.escape(ext)}</td>",
             f"<td class='{status_cls}'>{html.escape(row.status)}</td>",
@@ -1162,6 +1200,7 @@ def _iter_html_file_table(
             entry = row.entries.get(loc)
             if err_msg is not None:
                 cells.append(f"<td class='cell-error'>{ERROR_PLACEHOLDER}</td>")
+                err_msg = _sanitize(err_msg)
                 cells.append(
                     f"<td class='cell-error' title='{html.escape(err_msg)}'>"
                     f"{html.escape(err_msg[:60])}</td>"
@@ -1191,7 +1230,7 @@ def _iter_html_file_table(
         # 詳細は relpath をキーに JSON ブロック (#report-data) から JS が引く
         yield (
             f'<tr class="file-row" '
-            f'data-relpath="{html.escape(row.relpath, quote=True)}">'
+            f'data-relpath="{html.escape(relpath, quote=True)}">'
             + "".join(cells)
             + "</tr>"
         )
@@ -1214,7 +1253,7 @@ def _html_dir_diff(dir_diffs, loc_names: List[str]) -> str:
         # フォルダ行にはモーダルが無いので、省略せず全体を出す
         cells = [
             f"<td class='num'>{i}</td>",
-            f"<td class='wrap-path'>{html.escape(d.relpath)}</td>",
+            f"<td class='wrap-path'>{html.escape(_sanitize(d.relpath))}</td>",
         ]
         for loc in loc_names:
             if d.presence[loc]:
@@ -1243,9 +1282,9 @@ def _html_errors(scans: List[ScanResult]) -> str:
             rows.append(
                 "<tr>"
                 f"<td class='num'>{n}</td>"
-                f"<td>{html.escape(s.location_name)}</td>"
-                f"<td class='wrap-path'>{html.escape(e.relpath)}</td>"
-                f"<td class='wrap-path'>{html.escape(e.message)}</td>"
+                f"<td>{html.escape(_sanitize(s.location_name))}</td>"
+                f"<td class='wrap-path'>{html.escape(_sanitize(e.relpath))}</td>"
+                f"<td class='wrap-path'>{html.escape(_sanitize(e.message))}</td>"
                 "</tr>"
             )
     if not rows:
