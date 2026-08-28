@@ -279,6 +279,34 @@ class TestExcel:
             ws = wb[sheet]
             assert ws.cell(row=2, column=1).value == "該当なし", sheet
 
+    def test_truncates_at_excel_row_limit(self, tmp_path: Path, monkeypatch):
+        """行数上限を超えたら切り詰めて注記する。
+
+        上限超過で保存が失敗すると Excel レポートが 1 枚も残らないため、
+        全滅させるより切り詰めて HTML 側へ誘導する。
+        実際の上限は 100 万行なので、テストでは上限を差し替えて確認する。
+        """
+        import reporter
+
+        monkeypatch.setattr(reporter, "EXCEL_MAX_DATA_ROWS", 3)
+        files = {f"f{i}.txt": make_entry("h") for i in range(5)}
+        a = make_scan("A", files=files)
+        b = make_scan("B", files=files)
+        ctx = ReportContext(
+            started_at=datetime(2026, 1, 1),
+            finished_at=datetime(2026, 1, 1),
+            config_path=tmp_path / "c.yaml",
+            scans=[a, b],
+            comparison=compare([a, b]),
+        )
+        out = write_excel(ctx, tmp_path / "big.xlsx")
+
+        from openpyxl import load_workbook
+        ws = load_workbook(out)["全ファイル一覧"]
+        # ヘッダー + データ3行 + 注記1行
+        assert ws.max_row == 5
+        assert "他 2 件" in str(ws.cell(row=5, column=1).value)
+
     def test_summary_sheet_includes_diff_counts(
         self, rich_ctx: ReportContext, tmp_path: Path
     ):

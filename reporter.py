@@ -34,6 +34,10 @@ ERROR_PLACEHOLDER = "エラー"
 SKIPPED_HASH_PLACEHOLDER = "(未計算)"
 DATETIME_FMT = "%Y-%m-%d %H:%M:%S"
 
+# Excel の 1 シートあたりの行数上限 (1,048,576)。
+# ヘッダー行と末尾の省略注記行を除いた分だけデータ行に使える。
+EXCEL_MAX_DATA_ROWS = 1_048_576 - 2
+
 
 def _minority_targets(row: FileRow) -> tuple[set, set]:
     """不一致行で強調表示すべき (ハッシュ集合, サイズ集合) を返す。
@@ -256,14 +260,37 @@ def _write_file_row(
         col += 3
 
 
+def _truncate_for_excel(rows: List[FileRow]) -> tuple[List[FileRow], int]:
+    """Excel の行数上限に収まるよう切り詰め、(表示する行, 省略した件数) を返す。
+
+    上限を超えると openpyxl が保存時に失敗し、レポートが 1 枚も残らない。
+    切り詰めたことは末尾の注記行で明示し、全件は HTML レポート側で見てもらう。
+    """
+    if len(rows) <= EXCEL_MAX_DATA_ROWS:
+        return rows, 0
+    return rows[:EXCEL_MAX_DATA_ROWS], len(rows) - EXCEL_MAX_DATA_ROWS
+
+
+def _write_truncation_note(ws, row_idx: int, omitted: int) -> None:
+    cell = ws.cell(
+        row=row_idx, column=1,
+        value=f"... 他 {omitted:,} 件は Excel の行数上限のため省略しました "
+              f"(全件は HTML レポートを参照してください)",
+    )
+    cell.font = Font(bold=True, color="9C0006")
+
+
 def _excel_all_files(wb: WB, ctx: ReportContext) -> None:
     ws = wb.create_sheet("全ファイル一覧")
     loc_names = ctx.comparison.location_names
     headers = _file_columns_for(loc_names)
     _set_header_row(ws, headers)
 
-    for i, row in enumerate(ctx.comparison.all_files, 1):
+    rows, omitted = _truncate_for_excel(ctx.comparison.all_files)
+    for i, row in enumerate(rows, 1):
         _write_file_row(ws, i + 1, i, row, loc_names)
+    if omitted:
+        _write_truncation_note(ws, len(rows) + 2, omitted)
 
     # 列幅
     ws.column_dimensions["A"].width = 6   # No.
@@ -295,8 +322,11 @@ def _excel_subset(wb: WB, ctx: ReportContext, sheet_name: str, rows: List[FileRo
         ws.cell(row=2, column=1, value="該当なし")
         return
 
+    rows, omitted = _truncate_for_excel(rows)
     for i, row in enumerate(rows, 1):
         _write_file_row(ws, i + 1, i, row, loc_names)
+    if omitted:
+        _write_truncation_note(ws, len(rows) + 2, omitted)
 
     ws.column_dimensions["A"].width = 6
     ws.column_dimensions["B"].width = 50
