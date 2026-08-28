@@ -5,7 +5,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
-from scanner import FileEntry, ScanResult
+from scanner import FileEntry, ScanResult, match_key
 
 
 # 状態ラベル
@@ -20,14 +20,19 @@ STATUS_ERROR = "エラー"  # 一部の拠点で読み取り失敗 — 欠落と
 class FileRow:
     """全ファイル一覧シート1行分。
 
-    - entries: location_name -> FileEntry。存在しない or 読み取り失敗の拠点は None。
-    - errors:  location_name -> エラーメッセージ。エラーが無い拠点は None。
+    - relpath:  表示用の相対パス (NFC 正規化済み)。
+    - entries:  location_name -> FileEntry。存在しない or 読み取り失敗の拠点は None。
+    - errors:   location_name -> エラーメッセージ。エラーが無い拠点は None。
+    - real_relpaths: location_name -> その拠点での実際の相対パス。
+      Unicode 正規化形や大小文字が拠点ごとに違う場合、実ファイルを開くパスは
+      拠点ごとに異なるため保持する (`scanner.match_key` 参照)。
     """
 
     relpath: str
     entries: Dict[str, Optional[FileEntry]]
     errors: Dict[str, Optional[str]]
     status: str
+    real_relpaths: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -114,6 +119,22 @@ def _classify(
     return STATUS_PARTIAL_PRESENT
 
 
+def _display_relpath(
+    key: str, real_relpaths: Dict[str, str], location_names: List[str]
+) -> str:
+    """レポートに表示する相対パスを決める。
+
+    照合キーは大小文字を潰していることがあるため、そのままでは表示に使えない。
+    設定順で最初に見つかった拠点の実際のパスを NFC 正規化して使う
+    (どの拠点も持っていなければ照合キーにフォールバック)。
+    """
+    for name in location_names:
+        real = real_relpaths.get(name)
+        if real is not None:
+            return match_key(real, normalize_unicode=True, case_sensitive=True)
+    return key
+
+
 def compare(scans: List[ScanResult]) -> ComparisonResult:
     """N 拠点のスキャン結果を比較する。"""
     if len(scans) < 2:
@@ -123,7 +144,9 @@ def compare(scans: List[ScanResult]) -> ComparisonResult:
 
     # --- ファイル比較 ---
     # 和集合: 「ファイルが見つかった拠点」+「読み取り失敗した拠点」両方を含める。
-    all_relpaths = sorted(
+    # キーは照合キー (`scanner.match_key`) なので、Unicode 正規化形や大小文字が
+    # 拠点ごとに違っても同一ファイルとして 1 行にまとまる。
+    all_keys = sorted(
         {rp for s in scans for rp in s.files.keys()}
         | {rp for s in scans for rp in s.file_errors.keys()}
     )
@@ -134,15 +157,26 @@ def compare(scans: List[ScanResult]) -> ComparisonResult:
     extra_files: List[FileRow] = []
     errored_files: List[FileRow] = []
 
-    for rel in all_relpaths:
+    for key in all_keys:
         entries: Dict[str, Optional[FileEntry]] = {
-            s.location_name: s.files.get(rel) for s in scans
+            s.location_name: s.files.get(key) for s in scans
         }
         errors: Dict[str, Optional[str]] = {
-            s.location_name: s.file_errors.get(rel) for s in scans
+            s.location_name: s.file_errors.get(key) for s in scans
+        }
+        real_relpaths: Dict[str, str] = {
+            s.location_name: s.real_relpaths[key]
+            for s in scans
+            if key in s.real_relpaths
         }
         status = _classify(entries, errors)
-        row = FileRow(relpath=rel, entries=entries, errors=errors, status=status)
+        row = FileRow(
+            relpath=_display_relpath(key, real_relpaths, location_names),
+            entries=entries,
+            errors=errors,
+            status=status,
+            real_relpaths=real_relpaths,
+        )
         all_files.append(row)
 
         if status == STATUS_HASH_MISMATCH:

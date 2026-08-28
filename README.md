@@ -53,12 +53,30 @@ HTML 出力時は併せて `<output_dir>/sync-check.html` (タイムスタンプ
 
 - `locations`: 比較対象の拠点（2件以上）
 - `exclude_patterns`: ファイル名・ディレクトリ名の glob 除外（`~$*` 等）
+- `matching.normalize_unicode`: ファイル名を NFC 正規化して突き合わせる（既定 `true`）
+- `matching.case_sensitive`: ファイル名の大文字小文字を区別する（既定 `true`）
 - `output.format`: `excel` / `html` / `both`
 - `output.output_dir`: レポート出力先
 - `performance.parallel_workers`: ハッシュ並列計算スレッド数
 - `performance.hash_algorithm`: 現状 `sha256` のみ
 - `performance.hash_mode`: `always`（既定）/ `smart`
 - `performance.mtime_tolerance_sec`: `smart` で更新日時を一致とみなす許容誤差（既定 2 秒）
+
+### ファイル名の突き合わせ
+
+拠点間で同じファイルかどうかは、OS が返すファイル名をそのまま比較すると誤判定します。
+
+- **Unicode 正規化**: macOS (HFS+/APFS) は「が」を「か」+ 濁点（NFD）で返し、Windows は
+  合成済み（NFC）で返します。日本語ファイル名では頻出し、正規化しないと**同じファイルが
+  「欠落」と「余分なファイル」の両方に計上されます**。既定で NFC に正規化します。
+- **大文字小文字**: Windows 共有は区別せず、Linux は区別します。既定は区別する
+  （`Report.docx` と `report.docx` は別ファイル）。同一視したい場合は
+  `matching.case_sensitive: false`。
+
+正規化はあくまで**照合キー**にだけ使い、実際にファイルを開くときは各拠点での元のファイル名を
+使います（Linux では正規化形が違うと開けないため）。レポートのパスコピーも拠点ごとの
+実際の名前になります。同一拠点内で照合キーが衝突した場合（例: `case_sensitive: false` で
+`Report.docx` と `report.docx` が同居）は、先に見つかった方を採用してエラーに記録します。
 
 ### スキャンの流れと `hash_mode`
 
@@ -108,7 +126,7 @@ HTML 出力時は併せて `<output_dir>/sync-check.html` (タイムスタンプ
 
 ```bash
 pip install -r requirements-dev.txt
-pytest          # 122 テストケース
+pytest          # 130 テストケース
 pytest -v       # 詳細出力
 pytest -k mino  # 特定の名前のテストだけ
 ```

@@ -170,6 +170,47 @@ performance:
         with pytest.raises(ConfigError, match="mtime_tolerance_sec"):
             load_config(cfg)
 
+    def test_matching_defaults(self, tmp_path: Path):
+        """既定で Unicode 正規化あり・大小文字は区別する。"""
+        cfg = _write(tmp_path / "c.yaml", """
+locations:
+  - name: A
+    path: /opt/a
+  - name: B
+    path: /opt/b
+""")
+        config = load_config(cfg)
+        assert config.matching.normalize_unicode is True
+        assert config.matching.case_sensitive is True
+
+    def test_matching_options_parsed(self, tmp_path: Path):
+        cfg = _write(tmp_path / "c.yaml", """
+locations:
+  - name: A
+    path: /opt/a
+  - name: B
+    path: /opt/b
+matching:
+  normalize_unicode: false
+  case_sensitive: false
+""")
+        config = load_config(cfg)
+        assert config.matching.normalize_unicode is False
+        assert config.matching.case_sensitive is False
+
+    def test_matching_non_bool_rejected(self, tmp_path: Path):
+        cfg = _write(tmp_path / "c.yaml", """
+locations:
+  - name: A
+    path: /opt/a
+  - name: B
+    path: /opt/b
+matching:
+  case_sensitive: "yes"
+""")
+        with pytest.raises(ConfigError, match="case_sensitive"):
+            load_config(cfg)
+
     def test_backslash_path_rejected(self, tmp_path: Path):
         """バックスラッシュ表記 (\\\\server\\share) は YAML パース時に潰れて壊れがちなので拒否。"""
         cfg = _write(tmp_path / "c.yaml", """

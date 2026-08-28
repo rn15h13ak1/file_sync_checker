@@ -666,7 +666,9 @@ _HTML_SCRIPT = """
     LOCS.forEach((loc, i) => {
       const err = row.x ? row.x[i] : null;
       const cell = row.c[i];
-      const full = fullPathFor(loc, relpath);
+      // 拠点ごとに実ファイル名が違う場合は row.p にその拠点でのパスが入る
+      const rel = (row.p && row.p[i]) || relpath;
+      const full = fullPathFor(loc, rel);
       let state;
       if (err) state = el("td", { class: "muted", text: "エラー" });
       else if (!cell) state = el("td", { class: "muted", text: "欠落" });
@@ -904,6 +906,11 @@ def _report_data_json(ctx: ReportContext) -> str:
         data: dict = {"s": row.status, "c": cells}
         if any(e is not None for e in errs):
             data["x"] = errs
+        # 拠点ごとに実際のファイル名が違う場合 (Unicode 正規化形・大小文字) のみ、
+        # フルパス組み立て用の相対パスを持たせる。通常は表示用パスと同じなので省略する。
+        reals = [row.real_relpaths.get(loc) for loc in loc_names]
+        if any(r is not None and r != row.relpath for r in reals):
+            data["p"] = reals
         rows[row.relpath] = data
 
     payload = {

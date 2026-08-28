@@ -36,9 +36,18 @@ class PerformanceConfig:
 
 
 @dataclass(frozen=True)
+class MatchingConfig:
+    """拠点間で「同じファイル」とみなす条件。"""
+
+    normalize_unicode: bool = True
+    case_sensitive: bool = True
+
+
+@dataclass(frozen=True)
 class Config:
     locations: List[Location]
     exclude_patterns: List[str] = field(default_factory=list)
+    matching: MatchingConfig = field(default_factory=MatchingConfig)
     output: OutputConfig = field(default_factory=lambda: OutputConfig("excel", Path("./reports")))
     performance: PerformanceConfig = field(
         default_factory=lambda: PerformanceConfig(4, "sha256")
@@ -147,9 +156,19 @@ def load_config(path: str | Path) -> Config:
         mtime_tolerance_sec=tolerance,
     )
 
+    matching_raw = raw.get("matching") or {}
+    for bool_key in ("normalize_unicode", "case_sensitive"):
+        if bool_key in matching_raw and not isinstance(matching_raw[bool_key], bool):
+            raise ConfigError(f"matching.{bool_key} は true / false で指定してください")
+    matching = MatchingConfig(
+        normalize_unicode=bool(matching_raw.get("normalize_unicode", True)),
+        case_sensitive=bool(matching_raw.get("case_sensitive", True)),
+    )
+
     return Config(
         locations=locations,
         exclude_patterns=exclude_patterns,
+        matching=matching,
         output=output,
         performance=performance,
     )

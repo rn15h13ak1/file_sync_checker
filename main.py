@@ -63,6 +63,8 @@ def run(config: Config, config_path: Path, *, show_progress: bool, log) -> int:
         hash_algorithm=config.performance.hash_algorithm,
         hash_mode=config.performance.hash_mode,
         mtime_tolerance_sec=config.performance.mtime_tolerance_sec,
+        normalize_unicode=config.matching.normalize_unicode,
+        case_sensitive=config.matching.case_sensitive,
         show_progress=show_progress,
         on_stat_done=_stat_done,
     )

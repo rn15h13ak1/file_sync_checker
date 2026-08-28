@@ -5,6 +5,7 @@ import os
 import sys
 import threading
 import time
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -320,6 +321,126 @@ class TestScanLocations:
             show_progress=False,
         )
         assert [s.location_name for s in scans] == ["A", "B", "C"]
+
+    def test_nfd_and_nfc_names_match_as_one_file(self, tmp_path: Path):
+        """macOS (NFD) と Windows (NFC) で同じ日本語ファイル名が別物にならない。
+
+        濁点付きの日本語ファイル名は macOS では分解形で返るため、
+        正規化しないと「欠落」+「余分」として二重計上される。
+        """
+        name = "議事録_ガバナンス部会.docx"
+        _write(tmp_path / "A" / unicodedata.normalize("NFC", name), "same")
+        _write(tmp_path / "B" / unicodedata.normalize("NFD", name), "same")
+
+        scans = scan_locations(
+            [("A", tmp_path / "A"), ("B", tmp_path / "B")],
+            exclude_patterns=[], parallel_workers=2,
+            hash_algorithm="sha256", show_progress=False,
+        )
+        a, b = scans
+        assert list(a.files) == list(b.files), "照合キーが一致していない"
+        # 実ファイルを開けている (ハッシュが取れている = 元のファイル名を保持できている)
+        key = list(a.files)[0]
+        assert a.files[key].hash == b.files[key].hash
+        assert unicodedata.is_normalized("NFC", key)
+        # 元のファイル名は拠点ごとに保持される
+        assert unicodedata.is_normalized("NFD", b.real_relpaths[key])
+
+    def test_normalization_can_be_disabled(self, tmp_path: Path):
+        name = "議事録_ガバナンス部会.docx"
+        _write(tmp_path / "A" / unicodedata.normalize("NFC", name), "same")
+        _write(tmp_path / "B" / unicodedata.normalize("NFD", name), "same")
+        scans = scan_locations(
+            [("A", tmp_path / "A"), ("B", tmp_path / "B")],
+            exclude_patterns=[], parallel_workers=2,
+            hash_algorithm="sha256", show_progress=False,
+            normalize_unicode=False,
+        )
+        assert list(scans[0].files) != list(scans[1].files)
+
+    def test_case_insensitive_matching(self, tmp_path: Path):
+        _write(tmp_path / "A" / "Report.DOCX", "same")
+        _write(tmp_path / "B" / "report.docx", "same")
+        scans = scan_locations(
+            [("A", tmp_path / "A"), ("B", tmp_path / "B")],
+            exclude_patterns=[], parallel_workers=2,
+            hash_algorithm="sha256", show_progress=False,
+            case_sensitive=False,
+        )
+        a, b = scans
+        assert list(a.files) == list(b.files)
+        key = list(a.files)[0]
+        # 実ファイル名は拠点ごとの元の大小文字を保つ
+        assert a.real_relpaths[key] == "Report.DOCX"
+        assert b.real_relpaths[key] == "report.docx"
+        assert a.files[key].hash == b.files[key].hash
+
+    def test_case_sensitive_by_default(self, tmp_path: Path):
+        _write(tmp_path / "A" / "Report.docx", "same")
+        _write(tmp_path / "B" / "report.docx", "same")
+        scans = scan_locations(
+            [("A", tmp_path / "A"), ("B", tmp_path / "B")],
+            exclude_patterns=[], parallel_workers=2,
+            hash_algorithm="sha256", show_progress=False,
+        )
+        assert list(scans[0].files) != list(scans[1].files)
+
+    def test_key_collision_within_location_is_reported(self, tmp_path: Path):
+        """同一拠点内で照合キーが衝突したら、握り潰さずエラーに残す。
+
+        大小文字を区別するファイルシステム (Linux の ext4 等) でのみ再現できる。
+        macOS の APFS は既定で区別しないため 1 ファイルにまとまり、衝突が起きない。
+        """
+        root = tmp_path / "A"
+        _write(root / "Report.docx", "one")
+        _write(root / "report.docx", "two")
+        if len(list(root.iterdir())) < 2:
+            pytest.skip("大小文字を区別しないファイルシステムでは再現できない")
+
+        result = stat_location("A", root, exclude_patterns=[], case_sensitive=False)
+        assert len(result.stats) == 1, "衝突したら先勝ちで1件だけ採用する"
+        assert any("照合キーが重複" in e.message for e in result.errors)
+
+    def test_key_collision_branch(self, tmp_path: Path, monkeypatch):
+        """衝突分岐そのものの検証。
+
+        大小文字を区別しないファイルシステム (macOS) では実ファイルで
+        衝突を作れないため、ディレクトリ列挙を差し替えて確認する。
+        """
+        class FakeStat:
+            st_size, st_mtime, st_mtime_ns = 10, 1000.0, 1000 * 10**9
+
+        class FakeEntry:
+            def __init__(self, name):
+                self.name = name
+                self.path = str(tmp_path / name)
+
+            def is_dir(self):
+                return False
+
+            def is_symlink(self):
+                return False
+
+            def stat(self):
+                return FakeStat()
+
+        class FakeScandir:
+            def __init__(self, entries):
+                self.entries = entries
+
+            def __enter__(self):
+                return iter(self.entries)
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(
+            os, "scandir",
+            lambda _p: FakeScandir([FakeEntry("Report.docx"), FakeEntry("report.docx")]),
+        )
+        result = stat_location("A", tmp_path, exclude_patterns=[], case_sensitive=False)
+        assert list(result.real_relpaths.values()) == ["Report.docx"], "先勝ち"
+        assert any("照合キーが重複" in e.message for e in result.errors)
 
     def test_hash_file_stops_on_cancel(self, tmp_path: Path):
         """中断フラグが立っていれば大きいファイルの途中でも止まる。"""

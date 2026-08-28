@@ -16,6 +16,7 @@ import fnmatch
 import hashlib
 import os
 import threading
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -72,10 +73,13 @@ class StatResult:
 
     location_name: str
     root: Path
+    # キーは照合キー (`match_key`)。実際のファイル名は real_relpaths を参照する。
     stats: Dict[str, FileStat]
     dirs: Dict[str, DirEntry]
     errors: List[ScanError] = field(default_factory=list)
     file_errors: Dict[str, str] = field(default_factory=dict)
+    # 照合キー -> この拠点での実際の相対パス
+    real_relpaths: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -84,14 +88,17 @@ class ScanResult:
 
     location_name: str
     root: Path
+    # キーは照合キー (`match_key`)。実際のファイル名は real_relpaths を参照する。
     files: Dict[str, FileEntry]
     dirs: Dict[str, DirEntry]
     errors: List[ScanError]
-    # ファイル単位の読み取り失敗 (relpath -> message)。
+    # ファイル単位の読み取り失敗 (照合キー -> message)。
     # walk 中のディレクトリエラーやルートエラーは含まない。
     file_errors: Dict[str, str] = field(default_factory=dict)
     # ハッシュを計算しなかったファイル数 (レポートのサマリー表示用)。
     skipped_hashes: int = 0
+    # 照合キー -> この拠点での実際の相対パス
+    real_relpaths: Dict[str, str] = field(default_factory=dict)
 
 
 class ScanCancelled(Exception):
@@ -122,6 +129,27 @@ def _is_excluded(name: str, patterns: Iterable[str]) -> bool:
     return any(fnmatch.fnmatch(name, p) for p in patterns)
 
 
+def match_key(
+    relpath: str, *, normalize_unicode: bool = True, case_sensitive: bool = True
+) -> str:
+    """拠点間で同一ファイルとみなすための照合キーを返す。
+
+    OS がファイル名をどの形で返すかは環境依存で、そのまま突き合わせると
+    同じファイルが別物として二重計上される:
+
+    - Unicode 正規化: macOS (HFS+/APFS) は「が」を「か」+ 濁点 (NFD) で返し、
+      Windows は合成済み (NFC) で返す。日本語ファイル名では頻出する。
+    - 大文字小文字: Windows 共有は区別しないが Linux は区別する。
+
+    表示や実際のファイルアクセスには元のパスを使い、キーは照合にだけ使う
+    (`StatResult.real_relpaths` に元のパスを保持する)。
+    """
+    key = unicodedata.normalize("NFC", relpath) if normalize_unicode else relpath
+    if not case_sensitive:
+        key = key.casefold()
+    return key
+
+
 def _abspath(root: Path, relpath: str) -> Path:
     """'/' 区切りの相対パスから実パスを組み立てる。"""
     return root.joinpath(*relpath.split("/"))
@@ -131,7 +159,10 @@ def _walk_stats(
     root: Path,
     exclude_patterns: List[str],
     cancel: Optional[threading.Event] = None,
-) -> Tuple[Dict[str, FileStat], List[str], List[ScanError], Dict[str, str]]:
+    *,
+    normalize_unicode: bool = True,
+    case_sensitive: bool = True,
+) -> Tuple[Dict[str, FileStat], Dict[str, str], List[str], List[ScanError], Dict[str, str]]:
     """ルート配下を再帰列挙し、サイズと更新日時を集める。
 
     `os.walk` ではなく `os.scandir` を直接使う。Windows では
@@ -142,9 +173,15 @@ def _walk_stats(
     リンク先がディレクトリならディレクトリとして記録するが、配下には降りない。
     """
     stats: Dict[str, FileStat] = {}
+    real_relpaths: Dict[str, str] = {}
     dirs: List[str] = []
     errors: List[ScanError] = []
     file_errors: Dict[str, str] = {}
+
+    def _key(rel: str) -> str:
+        return match_key(
+            rel, normalize_unicode=normalize_unicode, case_sensitive=case_sensitive
+        )
 
     stack: List[Tuple[Path, str]] = [(root, "")]
     while stack:
@@ -164,23 +201,34 @@ def _walk_stats(
             rel = f"{prefix}/{de.name}" if prefix else de.name
             try:
                 if de.is_dir():
-                    dirs.append(rel)
+                    dirs.append(_key(rel))
                     # シンボリックリンクのループを避けるため配下には降りない
                     if not de.is_symlink():
                         stack.append((Path(de.path), rel))
                     continue
                 st = de.stat()
-                stats[rel] = FileStat(
+                key = _key(rel)
+                if key in stats:
+                    # 正規化・大小文字を無視すると同名になるファイルが同一拠点に複数ある。
+                    # どちらを採用しても片方が消えるため、先勝ちにしてエラーとして残す。
+                    msg = (
+                        f"照合キーが重複しています: {rel!r} は {real_relpaths[key]!r} と"
+                        f"同一ファイル名とみなされます (先に見つかった方を使用)"
+                    )
+                    errors.append(ScanError(relpath=rel, message=msg))
+                    continue
+                stats[key] = FileStat(
                     size=st.st_size,
                     mtime=datetime.fromtimestamp(st.st_mtime),
                     mtime_ns=st.st_mtime_ns,
                 )
+                real_relpaths[key] = rel
             except OSError as e:
                 msg = f"{type(e).__name__}: {e}"
-                file_errors[rel] = msg
+                file_errors[_key(rel)] = msg
                 errors.append(ScanError(relpath=rel, message=msg))
 
-    return stats, dirs, errors, file_errors
+    return stats, real_relpaths, dirs, errors, file_errors
 
 
 def stat_location(
@@ -189,6 +237,8 @@ def stat_location(
     *,
     exclude_patterns: List[str],
     cancel: Optional[threading.Event] = None,
+    normalize_unicode: bool = True,
+    case_sensitive: bool = True,
 ) -> StatResult:
     """フェーズ 1: 1 拠点を列挙してメタデータだけを集める。"""
     if not root.exists():
@@ -202,7 +252,10 @@ def stat_location(
             errors=[ScanError(relpath="", message=f"root path is not a directory: {root}")],
         )
 
-    stats, dirs, errors, file_errors = _walk_stats(root, exclude_patterns, cancel)
+    stats, real_relpaths, dirs, errors, file_errors = _walk_stats(
+        root, exclude_patterns, cancel,
+        normalize_unicode=normalize_unicode, case_sensitive=case_sensitive,
+    )
     return StatResult(
         location_name=name,
         root=root,
@@ -210,6 +263,7 @@ def stat_location(
         dirs={d: DirEntry() for d in dirs},
         errors=errors,
         file_errors=file_errors,
+        real_relpaths=real_relpaths,
     )
 
 
@@ -301,9 +355,11 @@ def hash_locations(
     """
     tasks: List[Tuple[int, str, Path]] = []
     for i, s in enumerate(stat_results):
-        for rel in s.stats:
-            if rel in targets:
-                tasks.append((i, rel, _abspath(s.root, rel)))
+        for key in s.stats:
+            if key in targets:
+                # 実ファイルを開くには照合キーではなく元のファイル名が必要
+                # (Linux では NFC/NFD や大小文字が違うと開けない)
+                tasks.append((i, key, _abspath(s.root, s.real_relpaths.get(key, key))))
 
     hashes: Dict[Tuple[int, str], str] = {}
     hash_errors: Dict[Tuple[int, str], str] = {}
@@ -364,6 +420,7 @@ def hash_locations(
                 errors=errors,
                 file_errors=file_errors,
                 skipped_hashes=skipped,
+                real_relpaths=s.real_relpaths,
             )
         )
     return results
@@ -377,6 +434,8 @@ def scan_locations(
     hash_algorithm: str,
     hash_mode: str = HASH_MODE_ALWAYS,
     mtime_tolerance_sec: float = DEFAULT_MTIME_TOLERANCE_SEC,
+    normalize_unicode: bool = True,
+    case_sensitive: bool = True,
     show_progress: bool = True,
     on_stat_done=None,
 ) -> List[ScanResult]:
@@ -385,10 +444,15 @@ def scan_locations(
     フェーズ 1 は拠点ごとに並列化する (拠点は別サーバなので待ち時間が重なる)。
     `on_stat_done(StatResult)` が渡されていれば、拠点の列挙が終わるたびに呼ぶ。
     """
+    stat_kwargs = dict(
+        exclude_patterns=exclude_patterns,
+        normalize_unicode=normalize_unicode,
+        case_sensitive=case_sensitive,
+    )
     stat_results: List[Optional[StatResult]] = [None] * len(locations)
     if len(locations) <= 1:
         for i, (name, root) in enumerate(locations):
-            sr = stat_location(name, root, exclude_patterns=exclude_patterns)
+            sr = stat_location(name, root, **stat_kwargs)
             stat_results[i] = sr
             if on_stat_done:
                 on_stat_done(sr)
@@ -396,10 +460,7 @@ def scan_locations(
         cancel = threading.Event()
         with _managed_pool(len(locations), cancel) as ex:
             futures = {
-                ex.submit(
-                    stat_location, name, root,
-                    exclude_patterns=exclude_patterns, cancel=cancel,
-                ): i
+                ex.submit(stat_location, name, root, cancel=cancel, **stat_kwargs): i
                 for i, (name, root) in enumerate(locations)
             }
             for fut in as_completed(futures):

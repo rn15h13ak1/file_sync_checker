@@ -17,6 +17,18 @@ exclude_patterns:
   - ".DS_Store"
   - "*.lnk"
 
+# 拠点間で「同じファイル」とみなす条件。
+matching:
+  # ファイル名を NFC に正規化してから突き合わせる (既定 true)。
+  # macOS は「が」を「か」+ 濁点 (NFD) で返し、Windows は合成済み (NFC) で返すため、
+  # false にすると同じ日本語ファイル名が「欠落」+「余分」として二重に計上されます。
+  normalize_unicode: true
+
+  # ファイル名の大文字小文字を区別する (既定 true)。
+  # Windows 共有と Linux を混在させていて Report.docx / report.docx を
+  # 同一視したい場合のみ false にしてください。
+  case_sensitive: true
+
 output:
   # excel / html / both
   format: "excel"
