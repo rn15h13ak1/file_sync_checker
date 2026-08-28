@@ -8,6 +8,7 @@ from __future__ import annotations
 import html as html_mod
 import json
 import re
+import tracemalloc
 import unicodedata
 from datetime import datetime
 from pathlib import Path
@@ -413,6 +414,22 @@ class TestExcel:
 # ============================================================
 # HTML
 # ============================================================
+def _big_ctx(tmp_path: Path, n_rows: int) -> ReportContext:
+    """メモリ計測用に、そこそこ大きいレポートのコンテキストを作る。"""
+    files = {
+        f"dir{i // 50}/file_{i:05d}_資料.docx": make_entry(f"{i:064x}", size=1234)
+        for i in range(n_rows)
+    }
+    scans = [make_scan(name, files=dict(files)) for name in ("拠点A", "拠点B", "拠点C")]
+    return ReportContext(
+        started_at=datetime(2026, 1, 1),
+        finished_at=datetime(2026, 1, 1),
+        config_path=tmp_path / "c.yaml",
+        scans=scans,
+        comparison=compare(scans),
+    )
+
+
 def _extract_report_data(out: Path) -> dict:
     """レポート HTML に埋め込まれた #report-data の JSON を取り出す。"""
     body = out.read_text(encoding="utf-8")
@@ -802,6 +819,46 @@ class TestHtml:
         mismatch = body.split('<section id="mismatch">')[1].split("</section>")[0]
         assert 'class="filter-input"' in mismatch
         assert 'class="filter-status"' not in mismatch
+
+    def test_html_generation_does_not_hold_the_report_in_memory(self, tmp_path: Path):
+        """HTML はファイルへ流しながら書く (行数に比例してメモリを使わない)。
+
+        全体を 1 つの文字列に組み立てていた頃は 50,000 行 × 3 拠点で
+        ピーク約 500MB だった。ここでは 2,000 行で、出力サイズより
+        十分小さいピークに収まることを確認する。
+        """
+        ctx = _big_ctx(tmp_path, n_rows=2000)
+        tracemalloc.start()
+        try:
+            out = write_html(ctx, tmp_path / "big.html")
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+        size = out.stat().st_size
+        assert size > 1_000_000, "テストの前提が崩れている (出力が小さすぎる)"
+        assert peak < size / 4, (
+            f"ピーク {peak/1024**2:.1f}MB / 出力 {size/1024**2:.1f}MB — "
+            "レポート全体をメモリに組み立てていないか確認"
+        )
+
+    def test_excel_generation_does_not_hold_the_sheet_in_memory(self, tmp_path: Path):
+        """Excel は write_only で 1 行ずつ書く (シート全体を保持しない)。
+
+        通常モードは 50,000 行 × 3 拠点で約 236MB を使っていた。
+        """
+        ctx = _big_ctx(tmp_path, n_rows=2000)
+        tracemalloc.start()
+        try:
+            write_excel(ctx, tmp_path / "big.xlsx")
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+        # write_only なら行数によらずほぼ一定。通常モードだと 2,000 行で 10MB 前後になる
+        assert peak < 5 * 1024 * 1024, (
+            f"ピーク {peak/1024**2:.1f}MB — write_only が外れていないか確認"
+        )
 
     def test_report_size_scales_modestly_with_row_count(self, tmp_path: Path):
         """1 行あたりの出力バイト数に上限を設ける (肥大の再発防止)。
