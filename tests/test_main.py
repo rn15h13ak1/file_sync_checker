@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
 from config import load_config
-from main import run
+from main import EXIT_DIFF, EXIT_OK, EXIT_SCAN_ERROR, run
 
 
 def _make_locations(tmp_path: Path) -> tuple[Path, Path]:
@@ -41,6 +43,40 @@ def _silent_logger() -> logging.Logger:
         log.addHandler(logging.NullHandler())
     log.setLevel(logging.CRITICAL)
     return log
+
+
+class TestExitCodes:
+    def test_all_match_returns_zero(self, tmp_path, capsys):
+        cfg_path = _write_config(tmp_path, "html")
+        rc = run(load_config(cfg_path), cfg_path, show_progress=False, log=_silent_logger())
+        capsys.readouterr()
+        assert rc == EXIT_OK
+
+    def test_difference_returns_one(self, tmp_path, capsys):
+        cfg_path = _write_config(tmp_path, "html")
+        (tmp_path / "locA" / "extra.txt").write_text("only in A", encoding="utf-8")
+        rc = run(load_config(cfg_path), cfg_path, show_progress=False, log=_silent_logger())
+        capsys.readouterr()
+        assert rc == EXIT_DIFF
+
+    def test_read_error_returns_three(self, tmp_path, capsys):
+        """読み取りエラーは差分と区別する。スキャンが不完全なため。"""
+        if sys.platform == "win32":
+            pytest.skip("chmod-based unreadable test is POSIX only")
+        if os.geteuid() == 0:
+            pytest.skip("running as root bypasses permission denial")
+        cfg_path = _write_config(tmp_path, "html")
+        locked = tmp_path / "locA" / "locked.txt"
+        locked.write_text("secret", encoding="utf-8")
+        (tmp_path / "locB" / "locked.txt").write_text("secret", encoding="utf-8")
+        locked.chmod(0o000)
+        try:
+            rc = run(load_config(cfg_path), cfg_path, show_progress=False,
+                     log=_silent_logger())
+            capsys.readouterr()
+            assert rc == EXIT_SCAN_ERROR
+        finally:
+            locked.chmod(0o600)
 
 
 class TestHtmlAliasOutput:

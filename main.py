@@ -17,6 +17,13 @@ from utils import ensure_dir, human_bytes, setup_logging, timestamp_slug
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
+# 終了コード
+EXIT_OK = 0
+EXIT_DIFF = 1           # 差分あり (スキャン自体は完走)
+EXIT_CONFIG_ERROR = 2
+EXIT_SCAN_ERROR = 3     # 読み取り失敗あり = スキャンが不完全
+EXIT_INTERRUPTED = 130
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -143,7 +150,6 @@ def run(config: Config, config_path: Path, *, show_progress: bool, log) -> int:
         print(f"  出力                   : {p}")
     print("=" * 60)
 
-    # 差分・エラーがあれば exit 1
     total_diffs = (
         len(comparison.hash_mismatches)
         + len(comparison.missing_files)
@@ -152,9 +158,13 @@ def run(config: Config, config_path: Path, *, show_progress: bool, log) -> int:
         + len(comparison.dir_diffs)
     )
     total_errors = sum(len(s.errors) for s in scans)
-    if total_diffs > 0 or total_errors > 0:
-        return 1
-    return 0
+    # 読み取りエラーは「差分あり」と区別する。エラーがあるとスキャン自体が不完全で、
+    # 差分が 0 件でも「一致していた」とは言えないため、自動化側で別扱いできるようにする。
+    if total_errors > 0:
+        return EXIT_SCAN_ERROR
+    if total_diffs > 0:
+        return EXIT_DIFF
+    return EXIT_OK
 
 
 def main() -> int:
@@ -165,10 +175,10 @@ def main() -> int:
         config = load_config(config_path)
     except ConfigError as e:
         log.error("設定エラー: %s", e)
-        return 2
+        return EXIT_CONFIG_ERROR
     except Exception as e:  # YAML パースエラー等
         log.error("設定ファイル読み込み失敗: %s", e)
-        return 2
+        return EXIT_CONFIG_ERROR
 
     try:
         return run(
@@ -179,7 +189,7 @@ def main() -> int:
         )
     except (KeyboardInterrupt, ScanCancelled):
         log.warning("中断されました")
-        return 130
+        return EXIT_INTERRUPTED
 
 
 if __name__ == "__main__":
