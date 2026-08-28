@@ -211,6 +211,51 @@ matching:
         with pytest.raises(ConfigError, match="case_sensitive"):
             load_config(cfg)
 
+    def test_missing_locations_rejected(self, tmp_path: Path):
+        cfg = _write(tmp_path / "c.yaml", "output:\n  format: html\n")
+        with pytest.raises(ConfigError, match="locations"):
+            load_config(cfg)
+
+    def test_locations_not_a_list_rejected(self, tmp_path: Path):
+        cfg = _write(tmp_path / "c.yaml", "locations: not-a-list\n")
+        with pytest.raises(ConfigError, match="locations"):
+            load_config(cfg)
+
+    def test_location_entry_not_a_mapping_rejected(self, tmp_path: Path):
+        cfg = _write(tmp_path / "c.yaml", """
+locations:
+  - "/opt/a"
+  - name: B
+    path: /opt/b
+""")
+        with pytest.raises(ConfigError, match=r"locations\[0\]"):
+            load_config(cfg)
+
+    def test_exclude_patterns_not_a_list_rejected(self, tmp_path: Path):
+        cfg = _write(tmp_path / "c.yaml", """
+locations:
+  - name: A
+    path: /opt/a
+  - name: B
+    path: /opt/b
+exclude_patterns: "*.tmp"
+""")
+        with pytest.raises(ConfigError, match="exclude_patterns"):
+            load_config(cfg)
+
+    def test_non_numeric_mtime_tolerance_rejected(self, tmp_path: Path):
+        cfg = _write(tmp_path / "c.yaml", """
+locations:
+  - name: A
+    path: /opt/a
+  - name: B
+    path: /opt/b
+performance:
+  mtime_tolerance_sec: "だいたい2秒"
+""")
+        with pytest.raises(ConfigError, match="mtime_tolerance_sec"):
+            load_config(cfg)
+
     def test_backslash_path_rejected(self, tmp_path: Path):
         """バックスラッシュ表記 (\\\\server\\share) は YAML パース時に潰れて壊れがちなので拒否。"""
         cfg = _write(tmp_path / "c.yaml", """

@@ -32,6 +32,9 @@ def human_bytes(n: int) -> str:
         size /= 1024
         if size < 1024:
             return f"{size:.2f} {u}"
+    # ループを抜けた時点で size は TB 単位。PB として出すにはもう一段割る
+    # (割り忘れると 1PB が "1024.00 PB" になる)
+    size /= 1024
     return f"{size:.2f} PB"
 
 
