@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import pytest
 import yaml
 
 from config import load_config
@@ -96,6 +97,46 @@ class TestHtmlAliasOutput:
         names = [f.name for f in out_dir.iterdir()]
         assert "sync-check.html" in names      # HTML alias は出る
         assert "sync-check.xlsx" not in names  # Excel alias は出ない
+
+    def test_latest_alias_is_replaced_atomically(self, tmp_path, capsys):
+        """差し替えは os.replace で行い、一時ファイルを残さない。
+
+        直接上書きすると、閲覧中のブラウザが途中までの HTML を読む可能性がある。
+        """
+        cfg_path = _write_config(tmp_path, "html")
+        config = load_config(cfg_path)
+        out_dir = tmp_path / "reports"
+
+        run(config, cfg_path, show_progress=False, log=_silent_logger())
+        capsys.readouterr()
+        run(config, cfg_path, show_progress=False, log=_silent_logger())
+        capsys.readouterr()
+
+        names = [f.name for f in out_dir.iterdir()]
+        assert "sync-check.html" in names
+        assert not any(n.endswith(".tmp") for n in names), names
+
+    def test_latest_alias_survives_copy_failure(self, tmp_path, capsys, monkeypatch):
+        """差し替えに失敗しても、既存の sync-check.html は壊さない。"""
+        cfg_path = _write_config(tmp_path, "html")
+        config = load_config(cfg_path)
+        out_dir = tmp_path / "reports"
+
+        run(config, cfg_path, show_progress=False, log=_silent_logger())
+        capsys.readouterr()
+        original = (out_dir / "sync-check.html").read_bytes()
+
+        import main as main_mod
+        monkeypatch.setattr(
+            main_mod.shutil, "copy2",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")),
+        )
+        with pytest.raises(OSError):
+            run(config, cfg_path, show_progress=False, log=_silent_logger())
+        capsys.readouterr()
+
+        assert (out_dir / "sync-check.html").read_bytes() == original
+        assert not any(f.name.endswith(".tmp") for f in out_dir.iterdir())
 
     def test_re_running_overwrites_latest_html(self, tmp_path, capsys):
         """2回実行すると sync-check.html は最新の内容で上書きされる。"""

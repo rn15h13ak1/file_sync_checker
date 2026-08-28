@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from datetime import datetime
@@ -40,6 +41,23 @@ def _resolve_default_config() -> Path:
         return script_candidate
     # どちらも無い場合は CWD を返す (load_config 側でエラーメッセージにする)
     return cwd_candidate
+
+
+def _write_latest_alias(src: Path, dst: Path) -> Path:
+    """最新レポートの安定名を差し替える。
+
+    直接上書きすると、書き込み中に開かれたレポートが途中までの内容になる。
+    同じディレクトリに一時ファイルを作ってから `os.replace` で差し替えることで、
+    閲覧側からは常に完全な旧版か新版のどちらかに見える (差し替えはアトミック)。
+    """
+    tmp = dst.with_name(dst.name + ".tmp")
+    try:
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dst)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return dst
 
 
 def run(config: Config, config_path: Path, *, show_progress: bool, log) -> int:
@@ -101,9 +119,7 @@ def run(config: Config, config_path: Path, *, show_progress: bool, log) -> int:
         written.append(out_html)
         # 安定リンク用: タイムスタンプ無しの最新レポートを上書きで生成する
         # (ブックマークや自動化スクリプトから常に最新を参照できるようにするため)
-        out_html_latest = out_dir / "sync-check.html"
-        shutil.copy2(out_html, out_html_latest)
-        written.append(out_html_latest)
+        written.append(_write_latest_alias(out_html, out_dir / "sync-check.html"))
 
     # コンソールサマリー
     elapsed = (finished_at - started_at).total_seconds()
