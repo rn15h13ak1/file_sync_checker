@@ -189,6 +189,43 @@ class TestStatLocation:
         assert result.stats == {}
         assert "does not exist" in result.errors[0].message
 
+    def test_unreadable_directory_recorded_and_scan_continues(self, tmp_path: Path):
+        """権限の無いディレクトリは記録して、他の拠点/フォルダの走査は続ける。"""
+        if sys.platform == "win32":
+            pytest.skip("chmod-based unreadable test is POSIX only")
+        if os.geteuid() == 0:  # type: ignore[attr-defined]
+            pytest.skip("running as root bypasses permission denial")
+        _write(tmp_path / "readable" / "ok.txt", "x")
+        secret = tmp_path / "secret"
+        _write(secret / "hidden.txt", "y")
+        secret.chmod(0o000)
+        try:
+            result = stat_location("t", tmp_path, exclude_patterns=[])
+            # 読めるファイルは拾えている
+            assert "readable/ok.txt" in result.stats
+            # 読めないディレクトリの中身は入らず、エラーとして残る
+            assert not any(k.startswith("secret/") for k in result.stats)
+            assert any("walk error" in e.message for e in result.errors)
+            # ディレクトリ自体は列挙できているので dirs には載る
+            assert "secret" in result.dirs
+        finally:
+            secret.chmod(0o700)
+
+    def test_broken_symlink_recorded_as_file_error(self, tmp_path: Path):
+        """リンク切れは stat で失敗する。走査を止めずファイル単位のエラーにする。"""
+        try:
+            (tmp_path / "dangling.txt").symlink_to(tmp_path / "no_such_target")
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks not supported on this platform")
+        _write(tmp_path / "ok.txt", "x")
+
+        result = stat_location("t", tmp_path, exclude_patterns=[])
+        assert "ok.txt" in result.stats
+        assert "dangling.txt" not in result.stats
+        assert "dangling.txt" in result.file_errors
+        assert "FileNotFoundError" in result.file_errors["dangling.txt"]
+        assert any(e.relpath == "dangling.txt" for e in result.errors)
+
 
 class TestPlanHashTargets:
     def _stats(self, tmp_path: Path, spec: dict) -> list:

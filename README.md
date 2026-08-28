@@ -144,10 +144,20 @@ HTML 出力時は併せて `<output_dir>/sync-check.html` (タイムスタンプ
 
 ```bash
 pip install -r requirements-dev.txt
-pytest          # 145 テストケース
+pytest          # 156 テストケース
 pytest -v       # 詳細出力
 pytest -k mino  # 特定の名前のテストだけ
 ```
+
+カバレッジ計測:
+
+```bash
+coverage run --source=. --omit="tests/*,.venv/*" -m pytest -q && coverage report -m
+```
+
+現状 94%。`comparator.py` と `reporter.py` は 100%、`scanner.py` 97%、`config.py` 96%。
+`main.py` (72%) と `utils.py` (48%) の未カバー分は `parse_args()` の引数定義、
+`main()` の CLI 配線、`setup_logging()` といった実行時配線で、ロジックの分岐ではありません。
 
 テストは以下の境界・分岐をカバー:
 - `comparator._classify`: 3拠点 2:1 / 1:2、4拠点 2:2 / 3:1、エラー優先判定、ハッシュ未計算時のサイズ判定

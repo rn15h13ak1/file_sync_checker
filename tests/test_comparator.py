@@ -123,6 +123,40 @@ class TestClassify:
         assert _classify(entries, errors) == STATUS_ERROR
 
 
+class TestDisplayRelpath:
+    def test_falls_back_to_match_key_when_no_real_path(self):
+        """実パスが分からないファイルは照合キーをそのまま表示する。
+
+        列挙フェーズで stat に失敗したファイル (リンク切れ等) は
+        file_errors には載るが real_relpaths には載らないため、
+        このフォールバックが実際に使われる。
+        """
+        a = make_scan("拠点A", files={"ok.txt": make_entry("h")})
+        b = make_scan(
+            "拠点B",
+            files={"ok.txt": make_entry("h")},
+            file_errors={"dangling.txt": "FileNotFoundError: [Errno 2]"},
+            real_relpaths={"ok.txt": "ok.txt"},  # dangling.txt は実パス不明
+        )
+        result = compare([a, b])
+        rels = [r.relpath for r in result.all_files]
+        assert "dangling.txt" in rels
+        row = next(r for r in result.all_files if r.relpath == "dangling.txt")
+        assert row.status == STATUS_ERROR
+        assert row.real_relpaths == {}
+
+    def test_uses_first_location_that_has_the_file(self):
+        """設定順で最初に見つかった拠点の実際の名前を表示に使う。"""
+        a = make_scan("拠点A", files={})
+        b = make_scan(
+            "拠点B",
+            files={"report.docx": make_entry("h")},
+            real_relpaths={"report.docx": "Report.DOCX"},
+        )
+        result = compare([a, b])
+        assert [r.relpath for r in result.all_files] == ["Report.DOCX"]
+
+
 class TestClassifyWithoutHashes:
     """hash_mode=smart ではハッシュ未計算 (hash=None) の行が出る。"""
 
@@ -161,6 +195,15 @@ class TestClassifyWithoutHashes:
             "C": make_entry(None, size=999),
         }
         assert minority_sizes(entries) == {999}
+
+    def test_no_location_has_the_file_is_treated_as_missing(self):
+        """どの拠点にも実体が無くエラーも無い入力への防御。
+
+        compare 経由では到達しない (和集合に載る時点でどこかに実体かエラーがある)
+        が、_classify を単体で使ったときに黙って誤分類しないことを固定しておく。
+        """
+        entries = {"A": None, "B": None}
+        assert _classify(entries, self._no_errors(entries)) == STATUS_PARTIAL_MISSING
 
     def test_minority_hashes_ignores_uncomputed(self):
         """ハッシュ未計算の行では強調対象なし (サイズ側で示す)。"""
