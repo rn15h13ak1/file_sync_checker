@@ -532,6 +532,13 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .cell-missing { background: #d9d9d9 !important; color: #888; text-align: center; }
 .cell-error { background: #f4b084 !important; color: #6a2900; }
 .summary-table td:first-child { font-weight: bold; width: 240px; background: #f0f3f8; }
+/* パスは省略すると確認手段が無くなるため折り返して全体を出す。
+   行数が少ない表 (サマリー・拠点別・エラー) でのみ使う。 */
+.wrap-path {
+  white-space: normal; overflow: visible; text-overflow: clip;
+  max-width: none; overflow-wrap: anywhere; word-break: break-all;
+}
+.wrap-path button[data-copy] { margin-left: 6px; vertical-align: baseline; }
 /* テーブルラッパー: 横スクロール + 大量行時は内部で縦スクロール。
    max-height があると thead position:sticky が wrap スクロールに対して機能する。
    行数が少なければそのまま自然な高さで表示される。 */
@@ -929,16 +936,33 @@ def _section_id(title: str) -> str:
     }.get(title, html.escape(title))
 
 
+def _path_cell(value: str) -> str:
+    """省略せず全体を表示し、コピーもできるパスセルを返す。
+
+    サマリーのパスは行数が少ないので、他の表のように 1 行に詰めて
+    末尾を省略する必要がない。省略するとフルパスを確認する手段が無くなる
+    (ファイル行と違ってモーダルが無いため)。
+    """
+    return (
+        f"<td class='wrap-path'>{html.escape(value)}"
+        f"<button type='button' data-copy=\"{html.escape(value, quote=True)}\" "
+        f"title='パスをコピー'>📋</button></td>"
+    )
+
+
 def _html_summary_section(ctx: ReportContext, elapsed: float) -> str:
     rows = [
-        ("スキャン開始", ctx.started_at.strftime(DATETIME_FMT)),
-        ("スキャン終了", ctx.finished_at.strftime(DATETIME_FMT)),
-        ("所要時間 (秒)", f"{elapsed:.2f}"),
-        ("設定ファイル", str(ctx.config_path)),
-        ("拠点数", str(len(ctx.scans))),
+        ("スキャン開始", ctx.started_at.strftime(DATETIME_FMT), False),
+        ("スキャン終了", ctx.finished_at.strftime(DATETIME_FMT), False),
+        ("所要時間 (秒)", f"{elapsed:.2f}", False),
+        ("設定ファイル", str(ctx.config_path), True),
+        ("拠点数", str(len(ctx.scans)), False),
     ]
     summary_kv = "".join(
-        f"<tr><td>{html.escape(k)}</td><td>{html.escape(v)}</td></tr>" for k, v in rows
+        f"<tr><td>{html.escape(k)}</td>"
+        + (_path_cell(v) if is_path else f"<td>{html.escape(v)}</td>")
+        + "</tr>"
+        for k, v, is_path in rows
     )
 
     loc_rows = []
@@ -947,7 +971,7 @@ def _html_summary_section(ctx: ReportContext, elapsed: float) -> str:
         loc_rows.append(
             "<tr>"
             f"<td>{html.escape(s.location_name)}</td>"
-            f"<td>{html.escape(str(s.root))}</td>"
+            f"{_path_cell(str(s.root))}"
             f"<td class='num'>{len(s.files):,}</td>"
             f"<td class='num'>{html.escape(human_bytes(total_size))}</td>"
             f"<td class='num'>{len(s.errors)}</td>"
@@ -1187,7 +1211,11 @@ def _html_dir_diff(dir_diffs, loc_names: List[str]) -> str:
     head_html = "".join(f"<th>{html.escape(h)}</th>" for h in headers)
     rows = []
     for i, d in enumerate(dir_diffs, 1):
-        cells = [f"<td class='num'>{i}</td>", f"<td>{html.escape(d.relpath)}</td>"]
+        # フォルダ行にはモーダルが無いので、省略せず全体を出す
+        cells = [
+            f"<td class='num'>{i}</td>",
+            f"<td class='wrap-path'>{html.escape(d.relpath)}</td>",
+        ]
         for loc in loc_names:
             if d.presence[loc]:
                 cells.append("<td style='text-align:center;'>○</td>")
@@ -1211,12 +1239,13 @@ def _html_errors(scans: List[ScanResult]) -> str:
     for s in scans:
         for e in s.errors:
             n += 1
+            # エラー行にもモーダルが無いため、パスとメッセージは省略せず全体を出す
             rows.append(
                 "<tr>"
                 f"<td class='num'>{n}</td>"
                 f"<td>{html.escape(s.location_name)}</td>"
-                f"<td>{html.escape(e.relpath)}</td>"
-                f"<td>{html.escape(e.message)}</td>"
+                f"<td class='wrap-path'>{html.escape(e.relpath)}</td>"
+                f"<td class='wrap-path'>{html.escape(e.message)}</td>"
                 "</tr>"
             )
     if not rows:

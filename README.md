@@ -144,7 +144,7 @@ HTML 出力時は併せて `<output_dir>/sync-check.html` (タイムスタンプ
 
 ```bash
 pip install -r requirements-dev.txt
-pytest          # 143 テストケース
+pytest          # 145 テストケース
 pytest -v       # 詳細出力
 pytest -k mino  # 特定の名前のテストだけ
 ```

@@ -5,6 +5,7 @@ I/O ロジックなので「正しく生成され、想定のシート/セクシ
 """
 from __future__ import annotations
 
+import html as html_mod
 import json
 import re
 from datetime import datetime
@@ -577,6 +578,68 @@ class TestHtml:
         assert "navigator.clipboard.writeText" in body
         # 旧 API フォールバック
         assert "document.execCommand" in body
+
+    def test_summary_paths_are_not_truncated_and_copyable(self, tmp_path: Path):
+        """サマリーのパスは省略せず全体を出し、コピーできる。
+
+        ファイル行と違ってモーダルが無いため、末尾を省略すると
+        フルパスを確認する手段がなくなる。
+        """
+        long_root = "//server-with-a-very-long-name/share/部署/2026年度/資料一式"
+        a = make_scan("拠点A", files={"x.txt": make_entry("h")})
+        a.root = Path(long_root)
+        b = make_scan("拠点B", files={"x.txt": make_entry("h")})
+        config_path = tmp_path / "とても長いディレクトリ名" / "設定ファイル.yaml"
+        ctx = ReportContext(
+            started_at=datetime(2026, 1, 1),
+            finished_at=datetime(2026, 1, 1),
+            config_path=config_path,
+            scans=[a, b],
+            comparison=compare([a, b]),
+        )
+        out = write_html(ctx, tmp_path / "out.html")
+        summary = out.read_text(encoding="utf-8").split('<section id="summary">')[1]
+        summary = summary.split("</section>")[0]
+
+        # 折り返し用クラスが付き、コピーボタンに全文が入る
+        assert "wrap-path" in summary
+        assert f'data-copy="{html_mod.escape(str(config_path), quote=True)}"' in summary
+        assert f'data-copy="{html_mod.escape(long_root, quote=True)}"' in summary
+        # 省略記号で切っていない
+        assert str(config_path) in html_mod.unescape(summary)
+
+    def test_error_and_dir_cells_are_not_truncated(self, tmp_path: Path):
+        """エラー詳細とフォルダ構造差分にもモーダルが無いので省略しない。"""
+        from scanner import ScanError
+
+        long_msg = (
+            "PermissionError: [Errno 13] Permission denied: "
+            "'//server/share/部署/2026年度/とても長いファイル名の資料.xlsx'"
+        )
+        long_dir = "設計/2026年度/詳細設計/サブシステムA/インターフェース定義"
+        a = make_scan(
+            "拠点A",
+            files={"x.txt": make_entry("h")},
+            dirs={long_dir: object()},
+            errors=[ScanError(relpath="部署/長いパス/資料.xlsx", message=long_msg)],
+        )
+        b = make_scan("拠点B", files={"x.txt": make_entry("h")})
+        ctx = ReportContext(
+            started_at=datetime(2026, 1, 1),
+            finished_at=datetime(2026, 1, 1),
+            config_path=tmp_path / "c.yaml",
+            scans=[a, b],
+            comparison=compare([a, b]),
+        )
+        body = write_html(ctx, tmp_path / "out.html").read_text(encoding="utf-8")
+
+        errors = body.split('<section id="errors">')[1].split("</section>")[0]
+        assert errors.count("wrap-path") == 2  # 相対パスとメッセージ
+        assert html_mod.escape(long_msg) in errors
+
+        dirs = body.split('<section id="dirs">')[1].split("</section>")[0]
+        assert "wrap-path" in dirs
+        assert html_mod.escape(long_dir) in dirs
 
     def test_tables_have_filter_controls(self, rich_ctx: ReportContext, tmp_path: Path):
         """各ファイル表に絞り込み UI が付く。状態が1種類の表には状態選択を出さない。"""
