@@ -24,14 +24,24 @@ def make_scan(
     dirs: Optional[Dict] = None,
     file_errors: Optional[Dict[str, str]] = None,
     errors: Optional[list] = None,
+    real_relpaths: Optional[Dict[str, str]] = None,
+    root: Optional[Path] = None,
 ) -> ScanResult:
+    """real_relpaths を省略すると、照合キーと実ファイル名が同じものとして扱う。"""
+    files = files or {}
+    file_errors = file_errors or {}
     return ScanResult(
         location_name=name,
-        root=Path("/tmp/dummy"),
-        files=files or {},
+        root=root or Path("/tmp/dummy"),
+        files=files,
         dirs=dirs or {},
         errors=errors or [],
-        file_errors=file_errors or {},
+        file_errors=file_errors,
+        real_relpaths=(
+            real_relpaths
+            if real_relpaths is not None
+            else {k: k for k in list(files) + list(file_errors)}
+        ),
     )
 
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 import html as html_mod
 import json
 import re
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from comparator import (
 from reporter import (
     ERROR_PLACEHOLDER,
     MISSING_PLACEHOLDER,
+    SKIPPED_HASH_PLACEHOLDER,
     ReportContext,
     _build_paths,
     _looks_windows,
@@ -578,6 +580,87 @@ class TestHtml:
         assert "navigator.clipboard.writeText" in body
         # 旧 API フォールバック
         assert "document.execCommand" in body
+
+    def test_size_column_highlighted_when_hash_skipped(self, tmp_path: Path):
+        """hash_mode=smart でハッシュ未計算の不一致では、サイズ列の少数派を強調する。
+
+        ハッシュが無いので通常のハッシュ強調が効かず、
+        どの拠点が違うのかを示す手掛かりが消えてしまう。
+        """
+        a = make_scan("拠点A", files={"f.bin": make_entry(None, size=100)})
+        b = make_scan("拠点B", files={"f.bin": make_entry(None, size=100)})
+        c = make_scan("拠点C", files={"f.bin": make_entry(None, size=999)})
+        ctx = ReportContext(
+            started_at=datetime(2026, 1, 1),
+            finished_at=datetime(2026, 1, 1),
+            config_path=tmp_path / "c.yaml",
+            scans=[a, b, c],
+            comparison=compare([a, b, c]),
+        )
+        body = write_html(ctx, tmp_path / "out.html").read_text(encoding="utf-8")
+        row = body.split('data-relpath="f.bin"')[1].split("</tr>")[0]
+        # 少数派 (拠点C の 999) のサイズ列だけ強調され、多数派は素のまま
+        assert "<td class='num cell-mismatch'>999</td>" in row
+        assert row.count("cell-mismatch") == 1
+        # ハッシュ欄は「未計算」表示
+        assert row.count(SKIPPED_HASH_PLACEHOLDER) == 3
+
+    def test_size_column_highlighted_in_excel_when_hash_skipped(self, tmp_path: Path):
+        a = make_scan("拠点A", files={"f.bin": make_entry(None, size=100)})
+        b = make_scan("拠点B", files={"f.bin": make_entry(None, size=100)})
+        c = make_scan("拠点C", files={"f.bin": make_entry(None, size=999)})
+        ctx = ReportContext(
+            started_at=datetime(2026, 1, 1),
+            finished_at=datetime(2026, 1, 1),
+            config_path=tmp_path / "c.yaml",
+            scans=[a, b, c],
+            comparison=compare([a, b, c]),
+        )
+        out = write_excel(ctx, tmp_path / "out.xlsx")
+        from openpyxl import load_workbook
+        ws = load_workbook(out)["全ファイル一覧"]
+        # サイズ列は 6, 9, 12 (拠点ごとに3列)
+        assert ws.cell(row=2, column=6).fill.fgColor.rgb in ("00000000", None)
+        assert ws.cell(row=2, column=9).fill.fgColor.rgb in ("00000000", None)
+        assert ws.cell(row=2, column=12).fill.fgColor.rgb == "00FFC7CE"
+        assert ws.cell(row=2, column=13).value == SKIPPED_HASH_PLACEHOLDER
+
+    def test_per_location_relpath_emitted_when_names_differ(self, tmp_path: Path):
+        """拠点ごとに実ファイル名が違う場合だけ、行データに実パスを持たせる。
+
+        macOS (NFD) と Windows (NFC) で同じファイルの名前の形が違うため、
+        フルパスは拠点ごとの実際の名前から組み立てる必要がある。
+        """
+        nfc = unicodedata.normalize("NFC", "議事録_ガバナンス部会.docx")
+        nfd = unicodedata.normalize("NFD", "議事録_ガバナンス部会.docx")
+        entry = make_entry("h")
+        a = make_scan("Win拠点", files={nfc: entry}, real_relpaths={nfc: nfc})
+        b = make_scan("Mac拠点", files={nfc: entry}, real_relpaths={nfc: nfd})
+        ctx = ReportContext(
+            started_at=datetime(2026, 1, 1),
+            finished_at=datetime(2026, 1, 1),
+            config_path=tmp_path / "c.yaml",
+            scans=[a, b],
+            comparison=compare([a, b]),
+        )
+        data = _extract_report_data(write_html(ctx, tmp_path / "out.html"))
+        row = data["rows"][nfc]
+        assert row["p"] == [nfc, nfd], "拠点ごとの実ファイル名が入っていない"
+        assert unicodedata.is_normalized("NFD", row["p"][1])
+
+    def test_per_location_relpath_omitted_when_names_match(self, tmp_path: Path):
+        """名前が揃っていれば実パスは持たせない (行あたりのバイト数を増やさない)。"""
+        a = make_scan("拠点A", files={"same.txt": make_entry("h")})
+        b = make_scan("拠点B", files={"same.txt": make_entry("h")})
+        ctx = ReportContext(
+            started_at=datetime(2026, 1, 1),
+            finished_at=datetime(2026, 1, 1),
+            config_path=tmp_path / "c.yaml",
+            scans=[a, b],
+            comparison=compare([a, b]),
+        )
+        data = _extract_report_data(write_html(ctx, tmp_path / "out.html"))
+        assert "p" not in data["rows"]["same.txt"]
 
     def test_summary_paths_are_not_truncated_and_copyable(self, tmp_path: Path):
         """サマリーのパスは省略せず全体を出し、コピーできる。
