@@ -330,6 +330,68 @@ class TestExcel:
         assert ws.max_row == 5
         assert "他 2 件" in str(ws.cell(row=5, column=1).value)
 
+    def test_error_sheet_lists_scan_errors(self, tmp_path: Path):
+        """エラーシートに拠点・相対パス・メッセージが並ぶ。"""
+        from scanner import ScanError
+
+        a = make_scan(
+            "拠点A",
+            files={"x.txt": make_entry("h")},
+            errors=[
+                ScanError(relpath="", message="root path does not exist: //srv/share"),
+                ScanError(relpath="部署/資料.xlsx", message="PermissionError: [Errno 13]"),
+            ],
+        )
+        b = make_scan(
+            "拠点B",
+            files={"x.txt": make_entry("h")},
+            errors=[ScanError(relpath="tmp", message="walk error: [Errno 13]")],
+        )
+        ctx = ReportContext(
+            started_at=datetime(2026, 1, 1),
+            finished_at=datetime(2026, 1, 1),
+            config_path=tmp_path / "c.yaml",
+            scans=[a, b],
+            comparison=compare([a, b]),
+        )
+        out = write_excel(ctx, tmp_path / "out.xlsx")
+        from openpyxl import load_workbook
+        ws = load_workbook(out)["エラー"]
+
+        assert ws.max_row == 1 + 3  # ヘッダ + 3件
+        rows = [
+            tuple(ws.cell(row=r, column=c).value for c in range(1, 5))
+            for r in range(2, ws.max_row + 1)
+        ]
+        # ルート自体のエラーは relpath が空。Excel では空文字が空セルになる
+        assert rows[0] == (1, "拠点A", None, "root path does not exist: //srv/share")
+        assert rows[1] == (2, "拠点A", "部署/資料.xlsx", "PermissionError: [Errno 13]")
+        assert rows[2] == (3, "拠点B", "tmp", "walk error: [Errno 13]")
+        # 見出し行の固定はエラーシートだけ A2 (相対パス列を固定しない)
+        assert ws.freeze_panes == "A2"
+
+    def test_subset_sheet_truncates_at_row_limit(self, tmp_path: Path, monkeypatch):
+        """差分シート側でも行数上限で切り詰めて注記する。"""
+        import reporter
+
+        monkeypatch.setattr(reporter, "EXCEL_MAX_DATA_ROWS", 2)
+        a = make_scan("A", files={f"f{i}.txt": make_entry(f"h{i}") for i in range(5)})
+        b = make_scan("B", files={f"f{i}.txt": make_entry(f"other{i}") for i in range(5)})
+        ctx = ReportContext(
+            started_at=datetime(2026, 1, 1),
+            finished_at=datetime(2026, 1, 1),
+            config_path=tmp_path / "c.yaml",
+            scans=[a, b],
+            comparison=compare([a, b]),
+        )
+        out = write_excel(ctx, tmp_path / "out.xlsx")
+        from openpyxl import load_workbook
+        ws = load_workbook(out)["ハッシュ不一致"]
+
+        # ヘッダ + データ2行 + 注記1行
+        assert ws.max_row == 4
+        assert "他 3 件" in str(ws.cell(row=4, column=1).value)
+
     def test_summary_sheet_includes_diff_counts(
         self, rich_ctx: ReportContext, tmp_path: Path
     ):
