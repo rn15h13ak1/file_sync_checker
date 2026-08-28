@@ -145,10 +145,21 @@ HTML 出力時は併せて `<output_dir>/sync-check.html` (タイムスタンプ
 
 ```bash
 pip install -r requirements-dev.txt
-pytest          # 156 テストケース
+pytest          # 177 テストケース
 pytest -v       # 詳細出力
 pytest -k mino  # 特定の名前のテストだけ
 ```
+
+権限・シンボリックリンク・大小文字の区別を使うテストは、環境によって成立しないと
+skip されます。**root コンテナの CI では権限まわりのテストがまとめて消えても緑になる**ため、
+CI では次を立てて skip を失敗として扱ってください:
+
+```bash
+FSC_STRICT_TESTS=1 pytest
+```
+
+（macOS は既定でファイル名の大小文字を区別しないため、ローカルでこれを立てると
+`test_key_collision_within_location_is_reported` が失敗します。Linux の CI 向けの設定です。）
 
 カバレッジ計測:
 
@@ -156,19 +167,23 @@ pytest -k mino  # 特定の名前のテストだけ
 coverage run --source=. --omit="tests/*,.venv/*" -m pytest -q && coverage report -m
 ```
 
-現状 94%。`comparator.py` と `reporter.py` は 100%、`scanner.py` 97%、`config.py` 96%。
-`main.py` (72%) と `utils.py` (48%) の未カバー分は `parse_args()` の引数定義、
-`main()` の CLI 配線、`setup_logging()` といった実行時配線で、ロジックの分岐ではありません。
+分岐カバレッジ付きで測る場合は `--branch` を足します。現状は行 96% / 分岐 96%
+（`comparator.py` 100%、`reporter.py` 99%、`scanner.py` `config.py` 95%）。
 
-テストは以下の境界・分岐をカバー:
+テストは以下の観点をカバー:
 - `comparator._classify`: 3拠点 2:1 / 1:2、4拠点 2:2 / 3:1、エラー優先判定、ハッシュ未計算時のサイズ判定
 - `comparator.minority_hashes` / `minority_sizes`: 明確な過半数、タイ、全部違う、None 混在
-- `comparator.compare`: エラー対象を欠落と分離、相対パスソート、dir差分
-- `scanner`: 除外パターン（ファイル/ディレクトリ再帰）、シンボリックリンク非追跡、読取失敗の記録、並列とシリアルの結果一致
+- `comparator.compare`: エラー対象を欠落と分離、相対パスソート、dir差分、表示パスの決定
+- `scanner`: 除外パターン（ファイル/ディレクトリ再帰）、シンボリックリンク非追跡、並列とシリアルの結果一致、チャンク境界を跨ぐハッシュ
+- `scanner`: 読み取り失敗の記録（ハッシュ時／列挙時・ディレクトリ／リンク切れ）
 - `scanner.plan_hash_targets`: `always`/`smart` の対象選定、更新日時の許容誤差、単独拠点ファイル
 - `scanner`: 中断時にキュー済みタスクを待たないこと、大きいファイルの途中での中断
-- `config`: 拠点パス重複（末尾スラッシュ含む）、相対パス解決、各種バリデーション
-- `reporter`: 1行あたり出力サイズの上限（詳細HTML重複の再発防止）、詳細データの一意性
+- `scanner.match_key`: NFC/NFD の同一視、大小文字、照合キーの衝突
+- `config`: 拠点パス重複（末尾スラッシュ含む）、相対パス解決、各種バリデーション、CLI 上書き
+- `reporter`: 出力できない文字（制御文字・不正UTF-8）でもレポートを落とさないこと
+- `reporter`: 行あたり出力サイズと生成時ピークメモリの上限（肥大・メモリ回帰の防止）
+- `reporter`: Windows ルート（UNC・ドライブレター）でのパス組み立て、出力の決定性
+- `cli`: 実プロセスでの終了コード、各上書きオプション、不正な引数の拒否
 
 ## モジュール構成
 

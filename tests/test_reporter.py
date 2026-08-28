@@ -741,6 +741,46 @@ class TestHtml:
         data = _extract_report_data(write_html(ctx, tmp_path / "out.html"))
         assert "p" not in data["rows"]["same.txt"]
 
+    def test_windows_roots_produce_backslash_paths(self, tmp_path: Path):
+        """UNC / ドライブレターの拠点では、コピー用パスを Windows 形式で出す。
+
+        本ツールの主対象は UNC 共有だが、パイプライン全体は POSIX でしか
+        動かしていない。ルート正規化がレポートまで届いているかをここで見る。
+        """
+        entry = make_entry("h")
+        a = make_scan("本社", files={"設計/仕様.xlsx": entry}, root=Path("//srv-hq/share/docs"))
+        b = make_scan("支店", files={"設計/仕様.xlsx": entry}, root=Path("D:/shared/docs"))
+        ctx = ReportContext(
+            started_at=datetime(2026, 1, 1),
+            finished_at=datetime(2026, 1, 1),
+            config_path=tmp_path / "c.yaml",
+            scans=[a, b],
+            comparison=compare([a, b]),
+        )
+        data = _extract_report_data(write_html(ctx, tmp_path / "out.html"))
+        assert data["locations"] == [
+            {"name": "本社", "root": "\\\\srv-hq\\share\\docs", "sep": "\\"},
+            {"name": "支店", "root": "D:\\shared\\docs", "sep": "\\"},
+        ]
+
+    def test_report_is_deterministic(self, tmp_path: Path):
+        """同じ入力からは同じレポートが出る (行順が実行ごとに揺れない)。
+
+        フェーズ1を拠点ごとに並列化しているため、完了順が
+        レポートの並びに漏れていないことを固定しておく。
+        """
+        ctx = _big_ctx(tmp_path, n_rows=200)
+        first = write_html(ctx, tmp_path / "a.html").read_bytes()
+        second = write_html(ctx, tmp_path / "b.html").read_bytes()
+        assert first == second
+
+        xa = write_excel(ctx, tmp_path / "a.xlsx")
+        xb = write_excel(ctx, tmp_path / "b.xlsx")
+        from openpyxl import load_workbook
+        rows_a = list(load_workbook(xa)["全ファイル一覧"].iter_rows(values_only=True))
+        rows_b = list(load_workbook(xb)["全ファイル一覧"].iter_rows(values_only=True))
+        assert rows_a == rows_b
+
     def test_summary_paths_are_not_truncated_and_copyable(self, tmp_path: Path):
         """サマリーのパスは省略せず全体を出し、コピーできる。
 

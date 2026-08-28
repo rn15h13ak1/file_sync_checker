@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+from .conftest import skip_or_fail
 import yaml
 
 from config import load_config
@@ -62,9 +64,9 @@ class TestExitCodes:
     def test_read_error_returns_three(self, tmp_path, capsys):
         """読み取りエラーは差分と区別する。スキャンが不完全なため。"""
         if sys.platform == "win32":
-            pytest.skip("chmod-based unreadable test is POSIX only")
+            skip_or_fail("chmod-based unreadable test is POSIX only")
         if os.geteuid() == 0:
-            pytest.skip("running as root bypasses permission denial")
+            skip_or_fail("running as root bypasses permission denial")
         cfg_path = _write_config(tmp_path, "html")
         locked = tmp_path / "locA" / "locked.txt"
         locked.write_text("secret", encoding="utf-8")

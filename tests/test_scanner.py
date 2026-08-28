@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from .conftest import skip_or_fail
+
 from scanner import (
     HASH_CHUNK_SIZE,
     HASH_MODE_ALWAYS,
@@ -115,7 +117,7 @@ class TestSymlinks:
         try:
             (tmp_path / "link").symlink_to(target)
         except (OSError, NotImplementedError):
-            pytest.skip("symlinks not supported on this platform")
+            skip_or_fail("symlinks not supported on this platform")
         result = _scan(tmp_path)
         # target 直下は含まれるが、link 経由では辿らない
         assert "target/in_target.txt" in result.files
@@ -125,9 +127,9 @@ class TestSymlinks:
 class TestErrorRecording:
     def test_unreadable_file_recorded_in_file_errors(self, tmp_path: Path):
         if sys.platform == "win32":
-            pytest.skip("chmod-based unreadable test is POSIX only")
+            skip_or_fail("chmod-based unreadable test is POSIX only")
         if os.geteuid() == 0:  # type: ignore[attr-defined]
-            pytest.skip("running as root bypasses permission denial")
+            skip_or_fail("running as root bypasses permission denial")
         f = tmp_path / "locked.txt"
         f.write_text("secret")
         f.chmod(0o000)
@@ -192,9 +194,9 @@ class TestStatLocation:
     def test_unreadable_directory_recorded_and_scan_continues(self, tmp_path: Path):
         """権限の無いディレクトリは記録して、他の拠点/フォルダの走査は続ける。"""
         if sys.platform == "win32":
-            pytest.skip("chmod-based unreadable test is POSIX only")
+            skip_or_fail("chmod-based unreadable test is POSIX only")
         if os.geteuid() == 0:  # type: ignore[attr-defined]
-            pytest.skip("running as root bypasses permission denial")
+            skip_or_fail("running as root bypasses permission denial")
         _write(tmp_path / "readable" / "ok.txt", "x")
         secret = tmp_path / "secret"
         _write(secret / "hidden.txt", "y")
@@ -216,7 +218,7 @@ class TestStatLocation:
         try:
             (tmp_path / "dangling.txt").symlink_to(tmp_path / "no_such_target")
         except (OSError, NotImplementedError):
-            pytest.skip("symlinks not supported on this platform")
+            skip_or_fail("symlinks not supported on this platform")
         _write(tmp_path / "ok.txt", "x")
 
         result = stat_location("t", tmp_path, exclude_patterns=[])
@@ -432,7 +434,7 @@ class TestScanLocations:
         _write(root / "Report.docx", "one")
         _write(root / "report.docx", "two")
         if len(list(root.iterdir())) < 2:
-            pytest.skip("大小文字を区別しないファイルシステムでは再現できない")
+            skip_or_fail("大小文字を区別しないファイルシステムでは再現できない")
 
         result = stat_location("A", root, exclude_patterns=[], case_sensitive=False)
         assert len(result.stats) == 1, "衝突したら先勝ちで1件だけ採用する"
@@ -479,6 +481,21 @@ class TestScanLocations:
         assert list(result.real_relpaths.values()) == ["Report.docx"], "先勝ち"
         assert any("照合キーが重複" in e.message for e in result.errors)
 
+    def test_hash_spans_multiple_chunks(self, tmp_path: Path):
+        """チャンク境界 (1MiB) を跨ぐファイルでもハッシュが正しい。
+
+        分割読みの積み上げを間違えても小さいファイルでは気付けない。
+        """
+        import hashlib
+
+        payload = bytes(range(256)) * (HASH_CHUNK_SIZE * 2 // 256 + 500)
+        assert len(payload) > HASH_CHUNK_SIZE * 2, "チャンクを跨いでいない"
+        (tmp_path / "big.bin").write_bytes(payload)
+
+        result = _scan(tmp_path)
+        assert result.files["big.bin"].hash == hashlib.sha256(payload).hexdigest()
+        assert result.files["big.bin"].size == len(payload)
+
     def test_hash_file_stops_on_cancel(self, tmp_path: Path):
         """中断フラグが立っていれば大きいファイルの途中でも止まる。"""
         big = tmp_path / "big.bin"
@@ -519,9 +536,9 @@ class TestScanLocations:
 
     def test_unreadable_file_recorded_as_error(self, tmp_path: Path):
         if sys.platform == "win32":
-            pytest.skip("chmod-based unreadable test is POSIX only")
+            skip_or_fail("chmod-based unreadable test is POSIX only")
         if os.geteuid() == 0:  # type: ignore[attr-defined]
-            pytest.skip("running as root bypasses permission denial")
+            skip_or_fail("running as root bypasses permission denial")
         for loc in ("A", "B"):
             _write(tmp_path / loc / "locked.txt", "secret")
         # 片方だけ読めなくする (サイズは同じなので smart でもハッシュ対象になるよう mtime をずらす)

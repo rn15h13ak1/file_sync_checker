@@ -1,6 +1,7 @@
 """共通フィクスチャ / ヘルパー。"""
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
@@ -9,6 +10,19 @@ import pytest
 
 from comparator import FileRow
 from scanner import FileEntry, ScanResult
+
+
+def skip_or_fail(reason: str) -> None:
+    """環境要件を満たさないテストを飛ばす。
+
+    権限やシンボリックリンクを使うテストは環境で成立しないことがある。
+    ただし黙って飛ばすと、root コンテナの CI では権限まわりのテストが
+    まとめて消えても緑のままになる。CI では FSC_STRICT_TESTS=1 を立てて、
+    飛ばさず失敗させること (README 参照)。
+    """
+    if os.environ.get("FSC_STRICT_TESTS"):
+        pytest.fail(f"環境要件を満たしていないためテストを実行できない: {reason}")
+    pytest.skip(reason)
 
 
 def make_entry(
