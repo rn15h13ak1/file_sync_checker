@@ -12,6 +12,7 @@ from comparator import (
     _classify,
     compare,
     minority_hashes,
+    minority_sizes,
 )
 
 from .conftest import make_entry, make_scan
@@ -120,6 +121,54 @@ class TestClassify:
         entries = {"A": make_entry("h1"), "B": make_entry("h2"), "C": None}
         errors = {"A": None, "B": None, "C": "Read failed"}
         assert _classify(entries, errors) == STATUS_ERROR
+
+
+class TestClassifyWithoutHashes:
+    """hash_mode=smart ではハッシュ未計算 (hash=None) の行が出る。"""
+
+    def _no_errors(self, keys):
+        return {k: None for k in keys}
+
+    def test_size_difference_is_mismatch_without_hash(self):
+        """サイズが違えばハッシュが無くても不一致と判定できる。"""
+        entries = {
+            "A": make_entry(None, size=100),
+            "B": make_entry(None, size=200),
+        }
+        assert _classify(entries, self._no_errors(entries)) == STATUS_HASH_MISMATCH
+
+    def test_same_size_no_hash_is_ok(self):
+        """サイズ・更新日時一致でハッシュを省略した行は一致扱い。"""
+        entries = {
+            "A": make_entry(None, size=100),
+            "B": make_entry(None, size=100),
+            "C": make_entry(None, size=100),
+        }
+        assert _classify(entries, self._no_errors(entries)) == STATUS_OK
+
+    def test_size_difference_wins_over_equal_hashes(self):
+        """サイズ判定はハッシュより先。両立しない入力は不一致に倒す。"""
+        entries = {
+            "A": make_entry("h", size=100),
+            "B": make_entry("h", size=200),
+        }
+        assert _classify(entries, self._no_errors(entries)) == STATUS_HASH_MISMATCH
+
+    def test_minority_sizes_highlights_odd_location(self):
+        entries = {
+            "A": make_entry(None, size=100),
+            "B": make_entry(None, size=100),
+            "C": make_entry(None, size=999),
+        }
+        assert minority_sizes(entries) == {999}
+
+    def test_minority_hashes_ignores_uncomputed(self):
+        """ハッシュ未計算の行では強調対象なし (サイズ側で示す)。"""
+        entries = {
+            "A": make_entry(None, size=100),
+            "B": make_entry(None, size=200),
+        }
+        assert minority_hashes(entries) == set()
 
 
 # ==========================================

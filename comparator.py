@@ -47,24 +47,38 @@ class ComparisonResult:
     dir_diffs: List[DirRow] = field(default_factory=list)
 
 
-def minority_hashes(entries: Dict[str, Optional[FileEntry]]) -> Set[str]:
-    """ハッシュ不一致状態の中で「過半数（最頻値）と異なる」ハッシュ集合を返す。
+def _minority(values: List) -> Set:
+    """「過半数（最頻値）と異なる」値の集合を返す。
 
-    最頻値ハッシュが複数（タイ）の場合は全ハッシュを返す（どれが「正」か判定不能なので全てハイライト）。
-    エントリが2つ未満や全部同一の場合は空集合を返す。
+    最頻値が複数（タイ）の場合は全値を返す（どれが「正」か判定不能なので全てハイライト）。
+    値が2つ未満や全部同一の場合は空集合を返す。
     """
-    hashes = [e.hash for e in entries.values() if e is not None]
-    if len(hashes) < 2:
+    if len(values) < 2:
         return set()
-    counts = Counter(hashes)
+    counts = Counter(values)
     if len(counts) <= 1:
-        return set()  # 全部同じハッシュ
+        return set()  # 全部同じ
     max_count = max(counts.values())
-    leaders = [h for h, c in counts.items() if c == max_count]
+    leaders = [v for v, c in counts.items() if c == max_count]
     if len(leaders) > 1:
         # 最頻値が複数 → 判定不能なので全ハイライト
         return set(counts.keys())
-    return {h for h, c in counts.items() if c < max_count}
+    return {v for v, c in counts.items() if c < max_count}
+
+
+def minority_hashes(entries: Dict[str, Optional[FileEntry]]) -> Set[str]:
+    """ハッシュ不一致状態の中で「過半数（最頻値）と異なる」ハッシュ集合を返す。"""
+    hashes = [e.hash for e in entries.values() if e is not None and e.hash is not None]
+    return _minority(hashes)
+
+
+def minority_sizes(entries: Dict[str, Optional[FileEntry]]) -> Set[int]:
+    """「過半数（最頻値）と異なる」サイズ集合を返す。
+
+    ハッシュ未計算（サイズ相違だけで不一致が確定したケース）で、
+    どの拠点が少数派かを示すために使う。
+    """
+    return _minority([e.size for e in entries.values() if e is not None])
 
 
 def _classify(
@@ -80,7 +94,12 @@ def _classify(
     n_present = len(present)
 
     if n_present == n_total:
-        # 全拠点に存在 → ハッシュで判定
+        # 全拠点に存在 → サイズ・ハッシュで判定。
+        # サイズが違えば内容も違うため、ハッシュ未計算 (hash=None) でも不一致と判定できる。
+        if len({e.size for e in present}) > 1:
+            return STATUS_HASH_MISMATCH
+        # ハッシュ計算をスキップしたファイルは全拠点 None になり、同一とみなされる
+        # (どの拠点でハッシュを取るかは相対パス単位で決まる — scanner.plan_hash_targets)。
         hashes = {e.hash for e in present}
         return STATUS_OK if len(hashes) == 1 else STATUS_HASH_MISMATCH
 

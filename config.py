@@ -8,6 +8,8 @@ from typing import Dict, List
 
 import yaml
 
+from scanner import DEFAULT_MTIME_TOLERANCE_SEC, HASH_MODE_ALWAYS, HASH_MODES
+
 
 SUPPORTED_FORMATS = {"excel", "html", "both"}
 SUPPORTED_HASH_ALGOS = {"sha256"}
@@ -29,6 +31,8 @@ class OutputConfig:
 class PerformanceConfig:
     parallel_workers: int
     hash_algorithm: str
+    hash_mode: str = HASH_MODE_ALWAYS
+    mtime_tolerance_sec: float = DEFAULT_MTIME_TOLERANCE_SEC
 
 
 @dataclass(frozen=True)
@@ -124,7 +128,24 @@ def load_config(path: str | Path) -> Config:
         raise ConfigError(
             f"performance.hash_algorithm は {sorted(SUPPORTED_HASH_ALGOS)} のみ対応 (現在: {algo})"
         )
-    performance = PerformanceConfig(parallel_workers=workers, hash_algorithm=algo)
+    hash_mode = str(perf_raw.get("hash_mode", HASH_MODE_ALWAYS)).lower()
+    if hash_mode not in HASH_MODES:
+        raise ConfigError(
+            f"performance.hash_mode は {sorted(HASH_MODES)} のいずれかを指定してください "
+            f"(現在: {hash_mode})"
+        )
+    try:
+        tolerance = float(perf_raw.get("mtime_tolerance_sec", DEFAULT_MTIME_TOLERANCE_SEC))
+    except (TypeError, ValueError):
+        raise ConfigError("performance.mtime_tolerance_sec は数値で指定してください")
+    if tolerance < 0:
+        raise ConfigError("performance.mtime_tolerance_sec は0以上を指定してください")
+    performance = PerformanceConfig(
+        parallel_workers=workers,
+        hash_algorithm=algo,
+        hash_mode=hash_mode,
+        mtime_tolerance_sec=tolerance,
+    )
 
     return Config(
         locations=locations,

@@ -10,7 +10,7 @@ from pathlib import Path
 from config import Config, ConfigError, load_config
 from comparator import compare
 from reporter import ReportContext, write_excel, write_html
-from scanner import scan_location
+from scanner import ScanCancelled, scan_locations
 from utils import ensure_dir, human_bytes, setup_logging, timestamp_slug
 
 
@@ -46,23 +46,32 @@ def run(config: Config, config_path: Path, *, show_progress: bool, log) -> int:
     started_at = datetime.now()
     log.info("スキャン開始: %d 拠点", len(config.locations))
 
-    scans = []
     for loc in config.locations:
         log.info("  [%s] %s", loc.name, loc.path)
-        scan = scan_location(
-            name=loc.name,
-            root=loc.path,
-            exclude_patterns=config.exclude_patterns,
-            parallel_workers=config.performance.parallel_workers,
-            hash_algorithm=config.performance.hash_algorithm,
-            show_progress=show_progress,
-        )
-        size = sum(f.size for f in scan.files.values())
+
+    def _stat_done(sr) -> None:
+        size = sum(f.size for f in sr.stats.values())
         log.info(
-            "  [%s] ファイル数=%d, サイズ=%s, エラー=%d",
-            loc.name, len(scan.files), human_bytes(size), len(scan.errors),
+            "  [%s] 列挙完了: ファイル数=%d, サイズ=%s, エラー=%d",
+            sr.location_name, len(sr.stats), human_bytes(size), len(sr.errors),
         )
-        scans.append(scan)
+
+    scans = scan_locations(
+        [(loc.name, loc.path) for loc in config.locations],
+        exclude_patterns=config.exclude_patterns,
+        parallel_workers=config.performance.parallel_workers,
+        hash_algorithm=config.performance.hash_algorithm,
+        hash_mode=config.performance.hash_mode,
+        mtime_tolerance_sec=config.performance.mtime_tolerance_sec,
+        show_progress=show_progress,
+        on_stat_done=_stat_done,
+    )
+    for s in scans:
+        if s.skipped_hashes:
+            log.info(
+                "  [%s] ハッシュ省略: %d 件 (hash_mode=%s)",
+                s.location_name, s.skipped_hashes, config.performance.hash_mode,
+            )
 
     log.info("差分検出中...")
     comparison = compare(scans)
@@ -150,7 +159,7 @@ def main() -> int:
             show_progress=not args.no_progress,
             log=log,
         )
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ScanCancelled):
         log.warning("中断されました")
         return 130
 

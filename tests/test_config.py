@@ -116,6 +116,60 @@ performance:
         with pytest.raises(ConfigError, match="hash_algorithm"):
             load_config(cfg)
 
+    def test_hash_mode_defaults_to_always(self, tmp_path: Path):
+        """既定では更新日時を信用せず全ファイルをハッシュする。"""
+        cfg = _write(tmp_path / "c.yaml", """
+locations:
+  - name: A
+    path: /opt/a
+  - name: B
+    path: /opt/b
+""")
+        config = load_config(cfg)
+        assert config.performance.hash_mode == "always"
+        assert config.performance.mtime_tolerance_sec == 2.0
+
+    def test_hash_mode_smart_accepted(self, tmp_path: Path):
+        cfg = _write(tmp_path / "c.yaml", """
+locations:
+  - name: A
+    path: /opt/a
+  - name: B
+    path: /opt/b
+performance:
+  hash_mode: smart
+  mtime_tolerance_sec: 0.5
+""")
+        config = load_config(cfg)
+        assert config.performance.hash_mode == "smart"
+        assert config.performance.mtime_tolerance_sec == 0.5
+
+    def test_invalid_hash_mode_rejected(self, tmp_path: Path):
+        cfg = _write(tmp_path / "c.yaml", """
+locations:
+  - name: A
+    path: /opt/a
+  - name: B
+    path: /opt/b
+performance:
+  hash_mode: trust_me
+""")
+        with pytest.raises(ConfigError, match="hash_mode"):
+            load_config(cfg)
+
+    def test_negative_mtime_tolerance_rejected(self, tmp_path: Path):
+        cfg = _write(tmp_path / "c.yaml", """
+locations:
+  - name: A
+    path: /opt/a
+  - name: B
+    path: /opt/b
+performance:
+  mtime_tolerance_sec: -1
+""")
+        with pytest.raises(ConfigError, match="mtime_tolerance_sec"):
+            load_config(cfg)
+
     def test_backslash_path_rejected(self, tmp_path: Path):
         """バックスラッシュ表記 (\\\\server\\share) は YAML パース時に潰れて壊れがちなので拒否。"""
         cfg = _write(tmp_path / "c.yaml", """

@@ -5,7 +5,8 @@ I/O ロジックなので「正しく生成され、想定のシート/セクシ
 """
 from __future__ import annotations
 
-import html as html_mod
+import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -299,6 +300,18 @@ class TestExcel:
 # ============================================================
 # HTML
 # ============================================================
+def _extract_report_data(out: Path) -> dict:
+    """レポート HTML に埋め込まれた #report-data の JSON を取り出す。"""
+    body = out.read_text(encoding="utf-8")
+    m = re.search(
+        r'<script type="application/json" id="report-data">\n(.*?)\n</script>',
+        body,
+        re.S,
+    )
+    assert m, "#report-data ブロックが見つからない"
+    return json.loads(m.group(1))
+
+
 class TestHtml:
     def test_writes_valid_html(self, rich_ctx: ReportContext, tmp_path: Path):
         out = write_html(rich_ctx, tmp_path / "out.html")
@@ -399,13 +412,23 @@ class TestHtml:
     def test_file_row_has_required_data_attributes(
         self, rich_ctx: ReportContext, tmp_path: Path
     ):
-        """行クリックでモーダルを開くために data-relpath と data-detail-html が付与される。"""
+        """行クリックでモーダルを開くために data-relpath が付与される。"""
         out = write_html(rich_ctx, tmp_path / "out.html")
         body = out.read_text(encoding="utf-8")
         assert 'data-relpath="mismatch.txt"' in body
         assert 'data-relpath="ok.txt"' in body
-        # 詳細 HTML がエスケープされて埋め込まれている
-        assert 'data-detail-html="' in body
+
+    def test_detail_html_not_embedded_per_row(
+        self, rich_ctx: ReportContext, tmp_path: Path
+    ):
+        """詳細 HTML を行ごとに埋め込まない (レポート肥大の原因だったため)。
+
+        1,000 ファイル × 3 拠点で HTML の 87% がこの属性値だった。
+        詳細は #report-data の JSON から JS が組み立てる。
+        """
+        out = write_html(rich_ctx, tmp_path / "out.html")
+        body = out.read_text(encoding="utf-8")
+        assert "data-detail-html" not in body
 
     def test_no_inline_detail_row_rendered(
         self, rich_ctx: ReportContext, tmp_path: Path
@@ -425,30 +448,55 @@ class TestHtml:
         assert "expand-all" not in body
         assert "collapse-all" not in body
 
-    def test_detail_html_contains_copy_paths(
+    def test_report_data_has_one_entry_per_relpath(
         self, rich_ctx: ReportContext, tmp_path: Path
     ):
-        """data-detail-html の中身を unescape した状態で各拠点のコピー用パスが含まれる。
+        """詳細データは相対パスをキーに 1 件ずつ。セクション間で重複しない。"""
+        data = _extract_report_data(write_html(rich_ctx, tmp_path / "out.html"))
+        # 和集合の 5 ファイル (ok, mismatch, missing_in_C, only_in_A, locked)
+        assert set(data["rows"]) == {
+            "ok.txt", "mismatch.txt", "missing_in_C.txt", "only_in_A.txt", "locked.txt",
+        }
+        assert data["rows"]["mismatch.txt"]["s"] == STATUS_HASH_MISMATCH
+
+    def test_report_data_carries_normalized_roots(
+        self, rich_ctx: ReportContext, tmp_path: Path
+    ):
+        """フルパスは JS が root + sep + relpath で組み立てるため、
+        正規化済みルートとセパレータが拠点ごとに 1 回だけ入る。
 
         rich_ctx の拠点ルートは make_scan のデフォルト '/tmp/dummy' のため UNIX 形式。
-        relpath='mismatch.txt' → full='/tmp/dummy/mismatch.txt', folder='/tmp/dummy'
         """
-        out = write_html(rich_ctx, tmp_path / "out.html")
-        body = out.read_text(encoding="utf-8")
-        # data-detail-html 属性内の HTML は属性向けエスケープが掛かっているため
-        # 一度デコードしてから検査する
-        decoded = html_mod.unescape(body)
-        assert 'data-copy="/tmp/dummy/mismatch.txt"' in decoded  # ファイル
-        assert 'data-copy="/tmp/dummy"' in decoded  # フォルダ
+        data = _extract_report_data(write_html(rich_ctx, tmp_path / "out.html"))
+        assert [loc["name"] for loc in data["locations"]] == ["拠点A", "拠点B", "拠点C"]
+        for loc in data["locations"]:
+            assert loc["root"] == "/tmp/dummy"
+            assert loc["sep"] == "/"
+
+    def test_report_data_records_entries_and_errors(
+        self, rich_ctx: ReportContext, tmp_path: Path
+    ):
+        """各拠点のセルは [size, hash, mtime]、欠落は null、エラーは x に入る。"""
+        data = _extract_report_data(write_html(rich_ctx, tmp_path / "out.html"))
+        # only_in_A: 拠点A のみ存在
+        only_a = data["rows"]["only_in_A.txt"]
+        assert only_a["c"][0][1] == "hash_y"
+        assert only_a["c"][1] is None and only_a["c"][2] is None
+        assert "x" not in only_a  # エラーが無い行では省略
+        # locked.txt: 拠点C が読み取り失敗
+        locked = data["rows"]["locked.txt"]
+        assert locked["c"] == [None, None, None]
+        assert "PermissionError" in locked["x"][2]
 
     def test_detail_path_table_omits_folder_column(
         self, rich_ctx: ReportContext, tmp_path: Path
     ):
         """フォルダパス列は廃止 (ボタンには残るが列としては表示しない)。"""
         out = write_html(rich_ctx, tmp_path / "out.html")
-        decoded = html_mod.unescape(out.read_text(encoding="utf-8"))
-        assert "<th>フォルダパス</th>" not in decoded
-        assert "<th>ファイルパス</th>" in decoded
+        body = out.read_text(encoding="utf-8")
+        # 詳細テーブルのヘッダーは JS 側で組み立てる。列は 4 つで、フォルダパス列は無い。
+        assert '"拠点", "状態", "ファイルパス", "操作"' in body
+        assert '"フォルダパス"' not in body
 
     def test_modal_dialog_present(
         self, rich_ctx: ReportContext, tmp_path: Path
@@ -481,6 +529,28 @@ class TestHtml:
         assert "navigator.clipboard.writeText" in body
         # 旧 API フォールバック
         assert "document.execCommand" in body
+
+    def test_report_size_scales_modestly_with_row_count(self, tmp_path: Path):
+        """1 行あたりの出力バイト数に上限を設ける (肥大の再発防止)。
+
+        詳細 HTML を行ごとに埋め込んでいた頃は 3 拠点で 1 行 5.3KB あった。
+        JSON 集約後はテーブルセルが支配的になり、1 行 2KB を大きく下回る。
+        """
+        n = 300
+        files = {f"dir{i // 20}/file_{i:04d}.txt": make_entry(f"h{i:060d}") for i in range(n)}
+        a = make_scan("拠点A", files=files)
+        b = make_scan("拠点B", files=files)
+        c = make_scan("拠点C", files=files)
+        ctx = ReportContext(
+            started_at=datetime(2026, 1, 1),
+            finished_at=datetime(2026, 1, 1),
+            config_path=tmp_path / "c.yaml",
+            scans=[a, b, c],
+            comparison=compare([a, b, c]),
+        )
+        out = write_html(ctx, tmp_path / "big.html")
+        per_row = out.stat().st_size / n
+        assert per_row < 2048, f"1 行あたり {per_row:.0f}B — 詳細データが重複していないか確認"
 
     def test_html_escapes_special_chars_in_paths(self, tmp_path: Path):
         """パス名に <script> を混ぜても素通りしないこと (HTMLエスケープ)。"""

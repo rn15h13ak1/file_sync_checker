@@ -11,7 +11,10 @@ from comparator import FileRow
 from scanner import FileEntry, ScanResult
 
 
-def make_entry(hash_: str = "h", size: int = 1, mtime: Optional[datetime] = None) -> FileEntry:
+def make_entry(
+    hash_: Optional[str] = "h", size: int = 1, mtime: Optional[datetime] = None
+) -> FileEntry:
+    """hash_=None は hash_mode=smart でハッシュ計算を省略した状態を表す。"""
     return FileEntry(size=size, mtime=mtime or datetime(2026, 1, 1, 0, 0, 0), hash=hash_)
 
 

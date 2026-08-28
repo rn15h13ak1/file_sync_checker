@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,7 @@ from comparator import (
     ComparisonResult,
     FileRow,
     minority_hashes,
+    minority_sizes,
 )
 from scanner import FileEntry, ScanResult
 from utils import human_bytes
@@ -28,7 +30,23 @@ from utils import human_bytes
 
 MISSING_PLACEHOLDER = "-"
 ERROR_PLACEHOLDER = "エラー"
+# hash_mode=smart でハッシュ計算を省略したファイルのハッシュ欄。
+SKIPPED_HASH_PLACEHOLDER = "(未計算)"
 DATETIME_FMT = "%Y-%m-%d %H:%M:%S"
+
+
+def _minority_targets(row: FileRow) -> tuple[set, set]:
+    """不一致行で強調表示すべき (ハッシュ集合, サイズ集合) を返す。
+
+    通常はハッシュの少数派を強調する。ハッシュを計算していない行
+    (サイズ相違だけで不一致が確定したケース) ではサイズの少数派を強調する。
+    """
+    if row.status != STATUS_HASH_MISMATCH:
+        return set(), set()
+    hashes = minority_hashes(row.entries)
+    if hashes:
+        return hashes, set()
+    return set(), minority_sizes(row.entries)
 
 
 def _looks_windows(root_str: str) -> bool:
@@ -39,23 +57,29 @@ def _looks_windows(root_str: str) -> bool:
     )
 
 
+def _normalize_root(root_str: str) -> tuple[str, str]:
+    """拠点ルートを正規化し、(正規化ルート, セパレータ) を返す。
+
+    Windows ルート判定ならセパレータをバックスラッシュに統一し、
+    Windows エクスプローラのアドレス欄に貼り付けて開ける形式にする。
+
+    ルート単位で1回だけ計算すればよいため、ファイル行ごとの再計算を避ける目的で
+    `_build_paths` から切り出してある (HTML 側は正規化済みルートを JSON で受け取り、
+    ファイルパスの組み立てはブラウザ側で行う)。
+    """
+    if _looks_windows(root_str):
+        return root_str.replace("/", "\\").rstrip("\\"), "\\"
+    return root_str.rstrip("/"), "/"
+
+
 def _build_paths(root_str: str, relpath: str) -> tuple[str, str]:
     """拠点のルートと相対パスからフルパスとフォルダパスを構築する。
-
-    Windows ルート判定なら全セパレータをバックスラッシュに統一し、
-    Windows エクスプローラのアドレス欄に貼り付けて開ける形式にする。
 
     Returns:
         (full_file_path, folder_path)
     """
-    if _looks_windows(root_str):
-        sep = "\\"
-        norm_root = root_str.replace("/", "\\").rstrip("\\")
-        rel = relpath.replace("/", "\\")
-    else:
-        sep = "/"
-        norm_root = root_str.rstrip("/")
-        rel = relpath
+    norm_root, sep = _normalize_root(root_str)
+    rel = relpath.replace("/", sep) if sep == "\\" else relpath
     full = f"{norm_root}{sep}{rel}"
     folder = full.rsplit(sep, 1)[0] if sep in full else full
     return full, folder
@@ -197,9 +221,8 @@ def _write_file_row(
         status_cell.fill = fill
 
     # ハッシュ不一致時は「最頻値（過半数）と異なる拠点だけ」赤くする。
-    minority = (
-        minority_hashes(file_row.entries) if file_row.status == STATUS_HASH_MISMATCH else set()
-    )
+    # ハッシュ未計算 (サイズ相違だけで不一致が確定) の場合はサイズ列を強調する。
+    minority, minority_size = _minority_targets(file_row)
 
     col = 6
     for loc in location_names:
@@ -220,11 +243,16 @@ def _write_file_row(
                 c.fill = FILL_GRAY
                 c.alignment = Alignment(horizontal="center")
         else:
-            ws.cell(row=row_idx, column=col, value=entry.size)
-            hash_cell = ws.cell(row=row_idx, column=col + 1, value=entry.hash)
+            size_cell = ws.cell(row=row_idx, column=col, value=entry.size)
+            hash_cell = ws.cell(
+                row=row_idx, column=col + 1,
+                value=entry.hash if entry.hash is not None else SKIPPED_HASH_PLACEHOLDER,
+            )
             ws.cell(row=row_idx, column=col + 2, value=entry.mtime.strftime(DATETIME_FMT))
-            if entry.hash in minority:
+            if entry.hash is not None and entry.hash in minority:
                 hash_cell.fill = FILL_HASH_MISMATCH
+            if entry.size in minority_size:
+                size_cell.fill = FILL_HASH_MISMATCH
         col += 3
 
 
@@ -347,17 +375,15 @@ def write_html(ctx: ReportContext, out_path: Path) -> Path:
     elapsed = (ctx.finished_at - ctx.started_at).total_seconds()
     loc_names = ctx.comparison.location_names
 
-    # 各拠点のルートパス文字列 (config.yaml に書かれた形式そのまま)
-    location_roots = {s.location_name: str(s.root) for s in ctx.scans}
-
     summary_html = _html_summary_section(ctx, elapsed)
-    all_files_html = _html_file_table("全ファイル一覧", ctx.comparison.all_files, loc_names, location_roots)
-    mismatch_html = _html_file_table("ハッシュ不一致", ctx.comparison.hash_mismatches, loc_names, location_roots)
-    missing_html = _html_file_table("ファイル欠落", ctx.comparison.missing_files, loc_names, location_roots)
-    extra_html = _html_file_table("余分なファイル", ctx.comparison.extra_files, loc_names, location_roots)
-    errored_html = _html_file_table("エラー対象ファイル", ctx.comparison.errored_files, loc_names, location_roots)
+    all_files_html = _html_file_table("全ファイル一覧", ctx.comparison.all_files, loc_names)
+    mismatch_html = _html_file_table("ハッシュ不一致", ctx.comparison.hash_mismatches, loc_names)
+    missing_html = _html_file_table("ファイル欠落", ctx.comparison.missing_files, loc_names)
+    extra_html = _html_file_table("余分なファイル", ctx.comparison.extra_files, loc_names)
+    errored_html = _html_file_table("エラー対象ファイル", ctx.comparison.errored_files, loc_names)
     dir_html = _html_dir_diff(ctx.comparison.dir_diffs, loc_names)
     err_html = _html_errors(ctx.scans)
+    report_data = _report_data_json(ctx)
 
     title = f"File Sync Check Report - {ctx.started_at.strftime(DATETIME_FMT)}"
     body = f"""
@@ -404,6 +430,9 @@ def write_html(ctx: ReportContext, out_path: Path) -> Path:
     <button type="button" class="modal-close">閉じる</button>
   </div>
 </dialog>
+<script type="application/json" id="report-data">
+{report_data}
+</script>
 <script>
 {_HTML_SCRIPT}
 </script>
@@ -438,6 +467,7 @@ thead th { background: #305496; color: #fff; position: sticky; top: 0; z-index: 
 tbody tr:nth-child(odd) td { background: #fff; }
 tbody tr:nth-child(even) td { background: #f6f8fb; }
 td.hash { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.78rem; }
+td.hash.muted { color: #888; font-style: italic; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
 /* ステータス・セル種別の塗りは zebra/sticky の背景を上書き */
 .status-ok { background: #c6efce !important; color: #006100; font-weight: bold; }
@@ -570,18 +600,143 @@ _HTML_SCRIPT = """
   }
 
   function flashCopied(btn) {
-    const original = btn.innerHTML;
+    const original = btn.textContent;
     btn.classList.add("copied");
-    btn.innerHTML = "&#10003; Copied";
+    btn.textContent = "\\u2713 Copied";
     setTimeout(() => {
       btn.classList.remove("copied");
-      btn.innerHTML = original;
+      btn.textContent = original;
     }, 1200);
   }
 
-  function openDetailModal(row) {
-    modalTitle.textContent = "詳細情報: " + row.dataset.relpath;
-    modalContent.innerHTML = row.dataset.detailHtml || "";
+  // ===== 詳細データ =====
+  // 詳細 DOM は行ごとに埋め込まず、#report-data の JSON から都度組み立てる。
+  // 値は textContent 経由でのみ挿入するため、パス名に HTML が混ざっても解釈されない。
+  const DATA = JSON.parse(document.getElementById("report-data").textContent);
+  const LOCS = DATA.locations;
+  const SCLS = DATA.statusClasses;
+
+  function el(tag, props, children) {
+    const node = document.createElement(tag);
+    if (props) {
+      for (const key of Object.keys(props)) {
+        if (props[key] === null || props[key] === undefined) continue;
+        if (key === "class") node.className = props[key];
+        else if (key === "text") node.textContent = props[key];
+        else node.setAttribute(key, props[key]);
+      }
+    }
+    (children || []).forEach((c) => node.appendChild(c));
+    return node;
+  }
+
+  function headerRow(labels) {
+    return el("thead", null, [
+      el("tr", null, labels.map((l) => el("th", { text: l }))),
+    ]);
+  }
+
+  function copyButton(value, label, title) {
+    return el("button", { type: "button", "data-copy": value, title: title, text: label });
+  }
+
+  function fullPathFor(loc, relpath) {
+    const rel = loc.sep === "\\\\" ? relpath.split("/").join("\\\\") : relpath;
+    return loc.root + loc.sep + rel;
+  }
+
+  function folderPathFor(full, sep) {
+    const i = full.lastIndexOf(sep);
+    return i >= 0 ? full.slice(0, i) : full;
+  }
+
+  function buildDetail(relpath, row) {
+    const frag = document.createDocumentFragment();
+
+    frag.appendChild(el("dl", { class: "modal-summary" }, [
+      el("dt", { text: "相対パス" }),
+      el("dd", null, [el("code", { text: relpath })]),
+      el("dt", { text: "状態" }),
+      el("dd", { class: SCLS[row.s] || "", text: row.s }),
+    ]));
+
+    // --- パス情報 ---
+    frag.appendChild(el("h4", { text: "パス情報" }));
+    const pathBody = el("tbody");
+    LOCS.forEach((loc, i) => {
+      const err = row.x ? row.x[i] : null;
+      const cell = row.c[i];
+      const full = fullPathFor(loc, relpath);
+      let state;
+      if (err) state = el("td", { class: "muted", text: "エラー" });
+      else if (!cell) state = el("td", { class: "muted", text: "欠落" });
+      else state = el("td", { text: "あり" });
+      pathBody.appendChild(el("tr", null, [
+        el("td", { text: loc.name }),
+        state,
+        el("td", { class: "path-cell" }, [el("code", { text: full })]),
+        // フォルダパスは列としては表示せず「📁 フォルダ」ボタンからコピーする
+        el("td", { class: "action-cell" }, [
+          copyButton(full, "📋 ファイル", "ファイルのフルパスをコピー"),
+          copyButton(folderPathFor(full, loc.sep), "📁 フォルダ",
+                     "フォルダパスをコピー (Windows エクスプローラに貼り付けて開く)"),
+        ]),
+      ]));
+    });
+    frag.appendChild(el("table", { class: "detail-table detail-paths" }, [
+      headerRow(["拠点", "状態", "ファイルパス", "操作"]), pathBody,
+    ]));
+
+    // --- ハッシュ詳細 ---
+    frag.appendChild(el("h4", { text: "ハッシュ詳細 (SHA-256 フル値)" }));
+    const hashBody = el("tbody");
+    LOCS.forEach((loc, i) => {
+      const err = row.x ? row.x[i] : null;
+      const cell = row.c[i];
+      if (err) {
+        hashBody.appendChild(el("tr", null, [
+          el("td", { text: loc.name }),
+          el("td", { colspan: "2", class: "muted", text: "エラー: " + err }),
+          el("td"),
+        ]));
+      } else if (!cell) {
+        hashBody.appendChild(el("tr", null, [
+          el("td", { text: loc.name }),
+          el("td", { colspan: "2", class: "muted", text: "欠落" }),
+          el("td"),
+        ]));
+      } else if (cell[1] === null) {
+        // hash_mode=smart でハッシュ計算を省略したファイル
+        hashBody.appendChild(el("tr", null, [
+          el("td", { text: loc.name }),
+          el("td", { class: "muted", text: "(未計算 — サイズ・更新日時で判定)" }),
+          el("td", { class: "num", text: cell[0].toLocaleString() + " B" }),
+          el("td"),
+        ]));
+      } else {
+        hashBody.appendChild(el("tr", null, [
+          el("td", { text: loc.name }),
+          el("td", { class: "hash-cell" }, [el("code", { text: cell[1] })]),
+          el("td", { class: "num", text: cell[0].toLocaleString() + " B" }),
+          el("td", { class: "action-cell" }, [
+            copyButton(cell[1], "📋 ハッシュ", "SHA-256 フル値をコピー"),
+          ]),
+        ]));
+      }
+    });
+    frag.appendChild(el("table", { class: "detail-table" }, [
+      headerRow(["拠点", "SHA-256", "サイズ", "操作"]), hashBody,
+    ]));
+
+    return frag;
+  }
+
+  function openDetailModal(tr) {
+    const relpath = tr.dataset.relpath;
+    const row = DATA.rows[relpath];
+    modalTitle.textContent = "詳細情報: " + relpath;
+    modalContent.textContent = "";
+    if (row) modalContent.appendChild(buildDetail(relpath, row));
     if (typeof modal.showModal === "function") {
       modal.showModal();
     } else {
@@ -711,99 +866,66 @@ def _html_summary_section(ctx: ReportContext, elapsed: float) -> str:
 """
 
 
-def _render_detail_html(
-    row: FileRow,
-    loc_names: List[str],
-    location_roots: Dict[str, str],
-) -> str:
-    """モーダルダイアログに流し込む詳細 HTML を返す (外側ラッパ含まず)。
+def _report_data_json(ctx: ReportContext) -> str:
+    """行クリック時の詳細表示に使うデータを JSON 文字列で返す。
 
-    パス情報テーブルとハッシュ詳細テーブル、それぞれにコピーボタンを含む。
+    行ごとに詳細 HTML を組み立てて data 属性に埋め込むと、拠点数 × 行数分のマークアップが
+    そのまま出力に乗る (実測: 1,000 ファイル × 3 拠点で HTML 6.7MB のうち 87% が詳細属性)。
+    同一の相対パスが「全ファイル一覧」と各差分セクションに重複して現れる分も二重に載る。
+
+    そこで相対パスをキーにしたデータブロック 1 つに集約し、詳細 DOM の組み立ては
+    ブラウザ側 (`_HTML_SCRIPT`) に任せる。重複はキーで自然に解消される。
+
+    形式 (バイト数を抑えるため短いキー・拠点順の配列を使う):
+        locations:     [{name, root, sep}, ...]  root/sep は拠点ごとに正規化済み
+        statusClasses: {状態ラベル: CSS クラス}
+        rows: {相対パス: {s: 状態, c: [[size, hash, mtime] | null, ...],
+                          x: [エラーメッセージ | null, ...]  ← エラーが無い行では省略}}
     """
-    path_rows: List[str] = []
-    for loc in loc_names:
-        root = location_roots.get(loc, "")
-        full, folder = _build_paths(root, row.relpath)
-        err = row.errors.get(loc)
-        entry = row.entries.get(loc)
-        if err is not None:
-            status_html = f"<td class='muted'>エラー</td>"
-        elif entry is None:
-            status_html = f"<td class='muted'>欠落</td>"
-        else:
-            status_html = f"<td>あり</td>"
-        # フォルダパスは「📁 フォルダ」ボタンの data-copy に格納する (列としては非表示)
-        path_rows.append(
-            "<tr>"
-            f"<td>{html.escape(loc)}</td>"
-            f"{status_html}"
-            f"<td class='path-cell'><code>{html.escape(full)}</code></td>"
-            f"<td class='action-cell'>"
-            f"<button type='button' data-copy=\"{html.escape(full, quote=True)}\" "
-            f"title='ファイルのフルパスをコピー'>📋 ファイル</button>"
-            f"<button type='button' data-copy=\"{html.escape(folder, quote=True)}\" "
-            f"title='フォルダパスをコピー (Windows エクスプローラに貼り付けて開く)'>📁 フォルダ</button>"
-            f"</td>"
-            f"</tr>"
-        )
+    loc_names = ctx.comparison.location_names
+    roots = {s.location_name: str(s.root) for s in ctx.scans}
 
-    hash_rows: List[str] = []
-    for loc in loc_names:
-        entry = row.entries.get(loc)
-        err = row.errors.get(loc)
-        if err is not None:
-            hash_rows.append(
-                "<tr>"
-                f"<td>{html.escape(loc)}</td>"
-                f"<td colspan='2' class='muted'>エラー: {html.escape(err)}</td>"
-                f"<td></td>"
-                "</tr>"
-            )
-        elif entry is None:
-            hash_rows.append(
-                "<tr>"
-                f"<td>{html.escape(loc)}</td>"
-                f"<td colspan='2' class='muted'>欠落</td>"
-                f"<td></td>"
-                "</tr>"
-            )
-        else:
-            hash_rows.append(
-                "<tr>"
-                f"<td>{html.escape(loc)}</td>"
-                f"<td class='hash-cell'><code>{html.escape(entry.hash)}</code></td>"
-                f"<td class='num'>{entry.size:,} B</td>"
-                f"<td class='action-cell'><button type='button' data-copy=\"{html.escape(entry.hash, quote=True)}\" "
-                f"title='SHA-256 フル値をコピー'>📋 ハッシュ</button></td>"
-                "</tr>"
-            )
+    locations = []
+    for name in loc_names:
+        norm_root, sep = _normalize_root(roots.get(name, ""))
+        locations.append({"name": name, "root": norm_root, "sep": sep})
 
-    summary_html = (
-        f'<dl class="modal-summary">'
-        f'<dt>相対パス</dt><dd><code>{html.escape(row.relpath)}</code></dd>'
-        f'<dt>状態</dt><dd class="{_status_class(row.status)}">{html.escape(row.status)}</dd>'
-        f'</dl>'
-    )
-    return (
-        f'{summary_html}'
-        f'<h4>パス情報</h4>'
-        f'<table class="detail-table detail-paths">'
-        f'<thead><tr><th>拠点</th><th>状態</th><th>ファイルパス</th><th>操作</th></tr></thead>'
-        f'<tbody>{"".join(path_rows)}</tbody>'
-        f'</table>'
-        f'<h4>ハッシュ詳細 (SHA-256 フル値)</h4>'
-        f'<table class="detail-table">'
-        f'<thead><tr><th>拠点</th><th>SHA-256</th><th>サイズ</th><th>操作</th></tr></thead>'
-        f'<tbody>{"".join(hash_rows)}</tbody>'
-        f'</table>'
-    )
+    rows: Dict[str, dict] = {}
+    for row in ctx.comparison.all_files:
+        cells: List[Optional[list]] = []
+        errs: List[Optional[str]] = []
+        for loc in loc_names:
+            entry = row.entries.get(loc)
+            cells.append(
+                None if entry is None
+                else [entry.size, entry.hash, entry.mtime.strftime(DATETIME_FMT)]
+            )
+            errs.append(row.errors.get(loc))
+        data: dict = {"s": row.status, "c": cells}
+        if any(e is not None for e in errs):
+            data["x"] = errs
+        rows[row.relpath] = data
+
+    payload = {
+        "locations": locations,
+        "statusClasses": {
+            STATUS_OK: "status-ok",
+            STATUS_HASH_MISMATCH: "status-mismatch",
+            STATUS_PARTIAL_MISSING: "status-missing",
+            STATUS_PARTIAL_PRESENT: "status-partial",
+            STATUS_ERROR: "status-error",
+        },
+        "rows": rows,
+    }
+    # `</script>` でブロックが閉じられるのを防ぐため '<' をエスケープする。
+    # ensure_ascii=False で日本語パスをそのまま出す (ドキュメントは UTF-8)。
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
 
 
 def _html_file_table(
     title: str,
     rows: List[FileRow],
     loc_names: List[str],
-    location_roots: Dict[str, str],
 ) -> str:
     sid = _section_id(title)
     if not rows:
@@ -833,9 +955,8 @@ def _html_file_table(
             f"<td class='{status_cls}'>{html.escape(row.status)}</td>",
         ]
         # ハッシュ不一致時は最頻値以外のハッシュだけ強調
-        minority = (
-            minority_hashes(row.entries) if row.status == STATUS_HASH_MISMATCH else set()
-        )
+        # (ハッシュ未計算ならサイズ側を強調)
+        minority, minority_size = _minority_targets(row)
 
         for loc in loc_names:
             err_msg = row.errors.get(loc)
@@ -852,21 +973,26 @@ def _html_file_table(
                 cells.append(f"<td class='cell-missing'>{MISSING_PLACEHOLDER}</td>")
                 cells.append(f"<td class='cell-missing'>{MISSING_PLACEHOLDER}</td>")
             else:
-                hash_cls = "hash"
-                if entry.hash in minority:
-                    hash_cls += " cell-mismatch"
-                cells.append(f"<td class='num'>{entry.size:,}</td>")
-                cells.append(
-                    f"<td class='{hash_cls}' title='{html.escape(entry.hash)}'>"
-                    f"{html.escape(entry.hash[:12])}…</td>"
-                )
+                size_cls = "num cell-mismatch" if entry.size in minority_size else "num"
+                cells.append(f"<td class='{size_cls}'>{entry.size:,}</td>")
+                if entry.hash is None:
+                    cells.append(
+                        f"<td class='hash muted' title='hash_mode=smart により省略'>"
+                        f"{SKIPPED_HASH_PLACEHOLDER}</td>"
+                    )
+                else:
+                    hash_cls = "hash"
+                    if entry.hash in minority:
+                        hash_cls += " cell-mismatch"
+                    cells.append(
+                        f"<td class='{hash_cls}' title='{html.escape(entry.hash)}'>"
+                        f"{html.escape(entry.hash[:12])}…</td>"
+                    )
                 cells.append(f"<td>{html.escape(entry.mtime.strftime(DATETIME_FMT))}</td>")
-        # 詳細 HTML を data-detail-html に埋め込む (JS が innerHTML に流し込む)
-        detail_html = _render_detail_html(row, loc_names, location_roots)
+        # 詳細は relpath をキーに JSON ブロック (#report-data) から JS が引く
         body_lines.append(
             f'<tr class="file-row" '
-            f'data-relpath="{html.escape(row.relpath, quote=True)}" '
-            f'data-detail-html="{html.escape(detail_html, quote=True)}">'
+            f'data-relpath="{html.escape(row.relpath, quote=True)}">'
             + "".join(cells)
             + "</tr>"
         )
