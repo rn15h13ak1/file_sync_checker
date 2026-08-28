@@ -145,7 +145,7 @@ HTML 出力時は併せて `<output_dir>/sync-check.html` (タイムスタンプ
 
 ```bash
 pip install -r requirements-dev.txt
-pytest          # 177 テストケース
+pytest          # 209 テストケース
 pytest -v       # 詳細出力
 pytest -k mino  # 特定の名前のテストだけ
 ```
@@ -167,8 +167,12 @@ FSC_STRICT_TESTS=1 pytest
 coverage run --source=. --omit="tests/*,.venv/*" -m pytest -q && coverage report -m
 ```
 
-分岐カバレッジ付きで測る場合は `--branch` を足します。現状は行 96% / 分岐 96%
-（`comparator.py` 100%、`reporter.py` 99%、`scanner.py` `config.py` 95%）。
+分岐カバレッジ付きで測る場合は `--branch` を足します。現状は行・分岐とも 99%
+（未カバーは `if __name__ == "__main__"` の1行のみ）。
+
+CLI テスト (`tests/test_cli.py`) は別プロセスで `main.py` を起動するため、
+カバレッジには計上されません。`main()` の異常系は `tests/test_main.py` が
+直接呼び出して確認しています。
 
 テストは以下の観点をカバー:
 - `comparator._classify`: 3拠点 2:1 / 1:2、4拠点 2:2 / 3:1、エラー優先判定、ハッシュ未計算時のサイズ判定
@@ -184,6 +188,8 @@ coverage run --source=. --omit="tests/*,.venv/*" -m pytest -q && coverage report
 - `reporter`: 行あたり出力サイズと生成時ピークメモリの上限（肥大・メモリ回帰の防止）
 - `reporter`: Windows ルート（UNC・ドライブレター）でのパス組み立て、出力の決定性
 - `cli`: 実プロセスでの終了コード、各上書きオプション、不正な引数の拒否
+- `main`: 設定エラー・中断・予期しない例外の終了コード、既定 config の探索順
+- `utils`: 単位境界 (B/KB/MB/GB/TB/PB)、ロガーの二重初期化防止
 
 ## モジュール構成
 
@@ -207,6 +213,9 @@ file_sync_checker/
 - HTML レポートの行詳細は 1 つの JSON ブロックに集約し、クリック時に組み立てる。
   行ごとに詳細 HTML を埋め込むとレポートの大半がその重複で占められるため
   （実測: 1,000 ファイル × 3 拠点で 6.7MB のうち 87%）。
+- 更新日時は **表示と判定で扱いを分けている**。レポートに出す日時は実行マシンの
+  ローカル時刻だが、`hash_mode: smart` の一致判定はエポックからの `st_mtime_ns` で行う。
+  拠点ごとにタイムゾーン設定の違うマシン経由でマウントしても判定が変わらない。
 - `locations` は2件以上に対応。「欠落あり」「一部のみ存在」は過半数を基準にラベル分け。
 - ハッシュ不一致セルの強調表示は最頻値（過半数）と異なる拠点のみ。タイの場合は全拠点を強調。
 - いずれかの拠点で読み取り失敗があったファイルは **エラー対象ファイル** として独立カテゴリに分類し、欠落と区別。

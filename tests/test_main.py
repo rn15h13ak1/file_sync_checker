@@ -11,8 +11,16 @@ import pytest
 from .conftest import skip_or_fail
 import yaml
 
-from config import load_config
-from main import EXIT_DIFF, EXIT_OK, EXIT_SCAN_ERROR, EXIT_UNEXPECTED, run
+from config import apply_overrides, load_config
+from main import (
+    EXIT_CONFIG_ERROR,
+    EXIT_DIFF,
+    EXIT_INTERRUPTED,
+    EXIT_OK,
+    EXIT_SCAN_ERROR,
+    EXIT_UNEXPECTED,
+    run,
+)
 
 
 def _make_locations(tmp_path: Path) -> tuple[Path, Path]:
@@ -113,6 +121,105 @@ class TestUnexpectedError:
         )
         assert main_mod.main() == EXIT_OK
         capsys.readouterr()
+
+
+class TestMainErrorPaths:
+    """main() の異常系。CLI テストは別プロセスで動きカバレッジに乗らないため、
+    ここでは main() を直接呼んで確認する。"""
+
+    def _argv(self, monkeypatch, *args: str) -> None:
+        monkeypatch.setattr(sys, "argv", ["main.py", *args])
+
+    def test_missing_config_returns_config_error(self, tmp_path, monkeypatch, capsys):
+        import main as main_mod
+
+        self._argv(monkeypatch, "-c", str(tmp_path / "nope.yaml"), "--no-progress")
+        assert main_mod.main() == EXIT_CONFIG_ERROR
+        capsys.readouterr()
+
+    def test_broken_yaml_returns_config_error(self, tmp_path, monkeypatch, capsys):
+        """ConfigError 以外 (YAML パースエラー) も設定エラーとして扱う。"""
+        import main as main_mod
+
+        bad = tmp_path / "bad.yaml"
+        bad.write_text("locations: [unclosed\n", encoding="utf-8")
+        self._argv(monkeypatch, "-c", str(bad), "--no-progress")
+        assert main_mod.main() == EXIT_CONFIG_ERROR
+        capsys.readouterr()
+
+    def test_keyboard_interrupt_returns_130(self, tmp_path, monkeypatch, capsys):
+        import main as main_mod
+
+        cfg_path = _write_config(tmp_path, "html")
+        self._argv(monkeypatch, "-c", str(cfg_path), "--no-progress")
+
+        def interrupted(*a, **k):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(main_mod, "scan_locations", interrupted)
+        assert main_mod.main() == EXIT_INTERRUPTED
+        capsys.readouterr()
+
+    def test_scan_cancelled_returns_130(self, tmp_path, monkeypatch, capsys):
+        import main as main_mod
+        from scanner import ScanCancelled
+
+        cfg_path = _write_config(tmp_path, "html")
+        self._argv(monkeypatch, "-c", str(cfg_path), "--no-progress")
+
+        def cancelled(*a, **k):
+            raise ScanCancelled()
+
+        monkeypatch.setattr(main_mod, "scan_locations", cancelled)
+        assert main_mod.main() == EXIT_INTERRUPTED
+        capsys.readouterr()
+
+    def test_default_config_lookup_prefers_cwd(self, tmp_path, monkeypatch, capsys):
+        """-c 省略時は CWD の config.yaml を使う。"""
+        import main as main_mod
+
+        _write_config(tmp_path, "html")  # tmp_path/config.yaml を作る
+        monkeypatch.chdir(tmp_path)
+        self._argv(monkeypatch, "--no-progress")
+        assert main_mod.main() == EXIT_OK
+        capsys.readouterr()
+        assert (tmp_path / "reports" / "sync-check.html").is_file()
+
+    def test_default_config_falls_back_to_script_dir(self, tmp_path, monkeypatch, capsys):
+        """CWD に無ければスクリプト同梱の config.yaml を探す。"""
+        import main as main_mod
+
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        monkeypatch.chdir(empty)
+        monkeypatch.setattr(main_mod, "SCRIPT_DIR", tmp_path)
+        _write_config(tmp_path, "html")
+        self._argv(monkeypatch, "--no-progress")
+        assert main_mod.main() == EXIT_OK
+        capsys.readouterr()
+
+    def test_default_config_lookup_falls_back_to_cwd_when_absent(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """どちらにも無ければ CWD のパスを返し、設定エラーとして報告する。"""
+        import main as main_mod
+
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        monkeypatch.chdir(empty)
+        monkeypatch.setattr(main_mod, "SCRIPT_DIR", tmp_path / "also_empty")
+        self._argv(monkeypatch, "--no-progress")
+        assert main_mod.main() == EXIT_CONFIG_ERROR
+        capsys.readouterr()
+
+    def test_skipped_hash_count_is_logged(self, tmp_path, caplog):
+        """hash_mode=smart でハッシュを省略した件数をログに出す。"""
+        cfg_path = _write_config(tmp_path, "html")
+        config = apply_overrides(load_config(cfg_path), hash_mode="smart")
+        log = logging.getLogger("test_main_skipped")
+        with caplog.at_level(logging.INFO, logger="test_main_skipped"):
+            run(config, cfg_path, show_progress=False, log=log)
+        assert any("ハッシュ省略" in r.message for r in caplog.records), caplog.text
 
 
 class TestHtmlAliasOutput:

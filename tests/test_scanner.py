@@ -284,6 +284,25 @@ class TestPlanHashTargets:
             stats, hash_mode=HASH_MODE_SMART, mtime_tolerance_sec=0
         ) == {"f.txt"}
 
+    def test_mtime_comparison_is_timezone_independent(self, tmp_path: Path):
+        """更新日時の一致判定はタイムゾーンに影響されない。
+
+        表示用の `mtime` はローカル時刻の datetime だが、判定には
+        エポックからの `mtime_ns` を使う。拠点ごとにタイムゾーン設定の違う
+        マシン経由でマウントしても判定結果が変わらないようにするため。
+        """
+        stats = self._stats(tmp_path, {
+            "A": {"f.txt": ("x", 1_700_000_000)},
+            "B": {"f.txt": ("x", 1_700_000_000)},
+        })
+        a, b = stats
+        # 同じ瞬間なので mtime_ns は一致する
+        assert a.stats["f.txt"].mtime_ns == b.stats["f.txt"].mtime_ns
+        assert plan_hash_targets(stats, hash_mode=HASH_MODE_SMART) == set()
+
+        # 表示用 datetime は naive (ローカル時刻)。判定には使わない
+        assert a.stats["f.txt"].mtime.tzinfo is None
+
     def test_smart_hashes_single_location_files(self, tmp_path: Path):
         """1拠点にしか無いファイルは比較不要だが、レポート表示のためハッシュする。"""
         stats = self._stats(tmp_path, {
@@ -533,6 +552,59 @@ class TestScanLocations:
         elapsed = time.monotonic() - begin
         assert cancel.is_set()
         assert elapsed < 2.0, f"中断に {elapsed:.1f} 秒かかった (キューを待っている)"
+
+    def test_single_location_is_scanned_serially(self, tmp_path: Path):
+        """拠点が1つならスレッドプールを立てずに直列で列挙する。"""
+        _write(tmp_path / "A" / "f.txt", "x")
+        seen = []
+        scans = scan_locations(
+            [("A", tmp_path / "A")],
+            exclude_patterns=[], parallel_workers=2,
+            hash_algorithm="sha256", show_progress=False,
+            on_stat_done=lambda sr: seen.append(sr.location_name),
+        )
+        assert seen == ["A"]
+        assert scans[0].files["f.txt"].hash is not None
+
+    def test_progress_bar_path_produces_same_result(self, tmp_path: Path):
+        """進捗バー表示あり (既定) でも結果は変わらない。"""
+        for loc in ("A", "B"):
+            for i in range(3):
+                _write(tmp_path / loc / f"f{i}.txt", f"content-{i}")
+        quiet = scan_locations(
+            [("A", tmp_path / "A"), ("B", tmp_path / "B")],
+            exclude_patterns=[], parallel_workers=2,
+            hash_algorithm="sha256", show_progress=False,
+        )
+        loud = scan_locations(
+            [("A", tmp_path / "A"), ("B", tmp_path / "B")],
+            exclude_patterns=[], parallel_workers=2,
+            hash_algorithm="sha256", show_progress=True,
+        )
+        for q, l in zip(quiet, loud):
+            assert {k: v.hash for k, v in q.files.items()} == \
+                   {k: v.hash for k, v in l.files.items()}
+
+    def test_serial_hashing_with_progress(self, tmp_path: Path):
+        """ワーカー1つ (直列) + 進捗バーの経路。"""
+        _write(tmp_path / "A" / "a.txt", "x")
+        _write(tmp_path / "A" / "b.txt", "y")
+        _write(tmp_path / "B" / "a.txt", "x")
+        _write(tmp_path / "B" / "b.txt", "y")
+        scans = scan_locations(
+            [("A", tmp_path / "A"), ("B", tmp_path / "B")],
+            exclude_patterns=[], parallel_workers=1,
+            hash_algorithm="sha256", show_progress=True,
+        )
+        assert scans[0].files["a.txt"].hash == scans[1].files["a.txt"].hash
+
+    def test_walk_stops_on_cancel(self, tmp_path: Path):
+        """列挙の途中でも中断フラグに反応する。"""
+        _write(tmp_path / "A" / "sub" / "f.txt", "x")
+        cancel = threading.Event()
+        cancel.set()
+        with pytest.raises(ScanCancelled):
+            stat_location("A", tmp_path / "A", exclude_patterns=[], cancel=cancel)
 
     def test_unreadable_file_recorded_as_error(self, tmp_path: Path):
         if sys.platform == "win32":
