@@ -550,6 +550,23 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .fixed-col-table tbody tr:nth-child(even) td:nth-child(3) { background: #f6f8fb; }
 .empty { color: #888; font-style: italic; padding: 8px; }
 
+/* ===== 絞り込みツールバー ===== */
+.table-tools {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 0 0 8px 0; font-size: 0.85rem;
+}
+.table-tools input.filter-input {
+  flex: 1 1 260px; min-width: 160px; max-width: 420px;
+  padding: 5px 9px; border: 1px solid #c3cbd8; border-radius: 4px;
+  font-family: inherit; font-size: 0.85rem;
+}
+.table-tools select.filter-status {
+  padding: 5px 8px; border: 1px solid #c3cbd8; border-radius: 4px;
+  font-family: inherit; font-size: 0.85rem; background: #fff;
+}
+.table-tools .filter-count { color: #555; font-variant-numeric: tabular-nums; }
+.table-tools .filter-count.filtered { color: #305496; font-weight: bold; }
+
 /* ===== ファイル行 (クリックでモーダル表示) ===== */
 tr.file-row { cursor: pointer; }
 tr.file-row:hover td { filter: brightness(0.97); }
@@ -816,6 +833,48 @@ _HTML_SCRIPT = """
     }
   });
 
+  // ===== 絞り込み =====
+  // 行データは DATA.rows にあるので、状態の判定に data 属性を増やす必要はない。
+  function setUpFilters(section) {
+    const input = section.querySelector(".filter-input");
+    if (!input) return;
+    const select = section.querySelector(".filter-status");
+    const countEl = section.querySelector(".filter-count");
+    const rows = Array.from(section.querySelectorAll("tbody tr.file-row"));
+    const total = rows.length;
+
+    function apply() {
+      const q = input.value.trim().toLowerCase();
+      const status = select ? select.value : "";
+      let shown = 0;
+      for (const tr of rows) {
+        const rel = tr.dataset.relpath || "";
+        const data = DATA.rows[rel];
+        const hit =
+          (!q || rel.toLowerCase().indexOf(q) !== -1) &&
+          (!status || (data && data.s === status));
+        tr.style.display = hit ? "" : "none";
+        if (hit) shown++;
+      }
+      const filtered = shown !== total;
+      countEl.textContent = filtered
+        ? shown.toLocaleString() + " / " + total.toLocaleString() + " 件"
+        : total.toLocaleString() + " 件";
+      countEl.classList.toggle("filtered", filtered);
+    }
+
+    // 行数が多いと 1 打鍵ごとの再計算が重くなるため少し待ってからまとめて処理する
+    let timer = null;
+    function schedule() {
+      clearTimeout(timer);
+      timer = setTimeout(apply, total > 5000 ? 200 : 60);
+    }
+    input.addEventListener("input", schedule);
+    if (select) select.addEventListener("change", apply);
+    apply();
+  }
+  document.querySelectorAll("section").forEach(setUpFilters);
+
   document.addEventListener("click", (e) => {
     // 1) コピーボタン (モーダル内・モーダル外どちらでも)
     const copyBtn = e.target.closest("button[data-copy]");
@@ -1032,9 +1091,29 @@ def _iter_html_file_table(
 
     head_html = "".join(f"<th>{html.escape(h)}</th>" for h in headers)
 
+    # 状態が 1 種類しかないセクション (各差分セクション) では状態フィルタは意味がない
+    statuses = sorted({r.status for r in rows})
+    if len(statuses) > 1:
+        options = "".join(
+            f'<option value="{html.escape(s, quote=True)}">{html.escape(s)}</option>'
+            for s in statuses
+        )
+        status_select = (
+            f'<select class="filter-status" aria-label="状態で絞り込み">'
+            f'<option value="">すべての状態</option>{options}</select>'
+        )
+    else:
+        status_select = ""
+
     yield f"""
 <section id="{sid}">
   <h2>{html.escape(title)} ({len(rows):,} 件)</h2>
+  <div class="table-tools">
+    <input type="search" class="filter-input" placeholder="パスで絞り込み"
+           aria-label="相対パスで絞り込み">
+    {status_select}
+    <span class="filter-count"></span>
+  </div>
   <div class="scroll-wrap"><table class="fixed-col-table">
     <thead><tr>{head_html}</tr></thead>
     <tbody>"""

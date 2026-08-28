@@ -578,6 +578,23 @@ class TestHtml:
         # 旧 API フォールバック
         assert "document.execCommand" in body
 
+    def test_tables_have_filter_controls(self, rich_ctx: ReportContext, tmp_path: Path):
+        """各ファイル表に絞り込み UI が付く。状態が1種類の表には状態選択を出さない。"""
+        out = write_html(rich_ctx, tmp_path / "out.html")
+        body = out.read_text(encoding="utf-8")
+
+        # 全ファイル一覧は複数の状態を含むので状態選択がある
+        all_section = body.split('<section id="all">')[1].split("</section>")[0]
+        assert 'class="filter-input"' in all_section
+        assert 'class="filter-status"' in all_section
+        for status in (STATUS_OK, STATUS_HASH_MISMATCH, STATUS_PARTIAL_MISSING):
+            assert f'<option value="{status}">' in all_section
+
+        # ハッシュ不一致セクションは状態が1種類なので選択は出さない
+        mismatch = body.split('<section id="mismatch">')[1].split("</section>")[0]
+        assert 'class="filter-input"' in mismatch
+        assert 'class="filter-status"' not in mismatch
+
     def test_report_size_scales_modestly_with_row_count(self, tmp_path: Path):
         """1 行あたりの出力バイト数に上限を設ける (肥大の再発防止)。
 
