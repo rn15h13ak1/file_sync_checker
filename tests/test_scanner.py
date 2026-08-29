@@ -152,6 +152,97 @@ class TestExcludePatterns:
         assert set(result.files.keys()) == {"a", "b"}
 
 
+class TestWalkProgress:
+    """列挙フェーズの進捗報告。
+
+    大きい共有では列挙だけで数分かかることがあり、その間なにも表示されないと
+    止まっているのか進んでいるのか分からない。
+    """
+
+    def test_reports_every_entry_examined(self, tmp_path: Path):
+        for i in range(30):
+            _write(tmp_path / f"f{i}.txt", "x")
+        (tmp_path / "sub").mkdir()
+        _write(tmp_path / "sub" / "deep.txt", "y")
+
+        seen = []
+        stat_location(
+            "A", tmp_path, exclude_patterns=[], on_progress=seen.append
+        )
+        # ファイル30 + ディレクトリ1 + sub 配下1 = 32
+        assert sum(seen) == 32
+
+    def test_reports_incrementally_for_large_trees(self, tmp_path: Path, monkeypatch):
+        """完了時にまとめてではなく、途中でも報告する。"""
+        monkeypatch.setattr(scanner, "_WALK_PROGRESS_INTERVAL", 10)
+        for d in range(5):
+            for i in range(10):
+                _write(tmp_path / f"d{d}" / f"f{i}.txt", "x")
+
+        seen = []
+        result = stat_location(
+            "A", tmp_path, exclude_patterns=[], on_progress=seen.append
+        )
+        assert len(result.stats) == 50
+        assert len(seen) > 1, "1回にまとめて報告されている"
+        assert sum(seen) == 55      # ファイル50 + ディレクトリ5
+
+    def test_excluded_entries_are_still_counted(self, tmp_path: Path):
+        """除外したエントリも走査はしているので進捗に含める。"""
+        _write(tmp_path / "keep.txt", "x")
+        _write(tmp_path / "skip.tmp", "y")
+        seen = []
+        stat_location(
+            "A", tmp_path, exclude_patterns=["*.tmp"], on_progress=seen.append
+        )
+        assert sum(seen) == 2
+
+    def test_no_callback_is_fine(self, tmp_path: Path):
+        _write(tmp_path / "f.txt", "x")
+        assert len(stat_location("A", tmp_path, exclude_patterns=[]).stats) == 1
+
+    def test_scan_locations_without_progress_does_not_create_a_bar(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """show_progress=False なら tqdm を作らない。"""
+        created = []
+        real_tqdm = scanner.tqdm
+
+        def spy(*a, **k):
+            created.append(k.get("desc"))
+            return real_tqdm(*a, **k)
+
+        monkeypatch.setattr(scanner, "tqdm", spy)
+        for loc in ("A", "B"):
+            _write(tmp_path / loc / "f.txt", "x")
+        scan_locations(
+            [("A", tmp_path / "A"), ("B", tmp_path / "B")],
+            exclude_patterns=[], parallel_workers=1,
+            hash_algorithm="sha256", show_progress=False,
+        )
+        assert created == []
+
+    def test_scan_locations_with_progress_creates_the_walk_bar(
+        self, tmp_path: Path, monkeypatch
+    ):
+        created = []
+        real_tqdm = scanner.tqdm
+
+        def spy(*a, **k):
+            created.append(k.get("desc"))
+            return real_tqdm(*a, **k)
+
+        monkeypatch.setattr(scanner, "tqdm", spy)
+        for loc in ("A", "B"):
+            _write(tmp_path / loc / "f.txt", "x")
+        scan_locations(
+            [("A", tmp_path / "A"), ("B", tmp_path / "B")],
+            exclude_patterns=[], parallel_workers=1,
+            hash_algorithm="sha256", show_progress=True,
+        )
+        assert "列挙中" in created
+
+
 class TestExcludeMatcher:
     """事前コンパイルした除外判定が fnmatch と同じ結果になること。
 

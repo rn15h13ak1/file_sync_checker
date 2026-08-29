@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from tqdm import tqdm
 
@@ -38,6 +38,10 @@ DEFAULT_MTIME_TOLERANCE_SEC = 2.0
 
 # 読み取り失敗を再試行するときの基本待ち時間 (秒)。試行ごとに倍加する。
 DEFAULT_RETRY_WAIT_SEC = 0.5
+
+# 列挙フェーズの進捗を報告する間隔 (エントリ数)。
+# 細かすぎると表示更新のコストが乗るので、ある程度まとめて報告する。
+_WALK_PROGRESS_INTERVAL = 500
 
 HASH_MODE_ALWAYS = "always"
 HASH_MODE_SMART = "smart"
@@ -208,6 +212,7 @@ def _walk_stats(
     *,
     normalize_unicode: bool = True,
     case_sensitive: bool = True,
+    on_progress: Optional[Callable[[int], None]] = None,
 ) -> Tuple[Dict[str, FileStat], Dict[str, str], List[str], List[ScanError], Dict[str, str]]:
     """ルート配下を再帰列挙し、サイズと更新日時を集める。
 
@@ -217,6 +222,10 @@ def _walk_stats(
 
     シンボリックリンクは `os.walk(followlinks=False)` と同じ扱いにする:
     リンク先がディレクトリならディレクトリとして記録するが、配下には降りない。
+
+    `on_progress(n)` を渡すと、走査したエントリ数を一定間隔で報告する。
+    大きい共有では列挙だけで数分かかることがあり、その間なにも表示されないと
+    止まっているのか進んでいるのか分からないため。
     """
     stats: Dict[str, FileStat] = {}
     real_relpaths: Dict[str, str] = {}
@@ -230,6 +239,8 @@ def _walk_stats(
         )
 
     excluded = ExcludeMatcher(exclude_patterns)
+    seen = 0        # 走査したエントリ数
+    reported = 0    # うち報告済みの数
 
     stack: List[Tuple[Path, str]] = [(root, "")]
     while stack:
@@ -242,6 +253,11 @@ def _walk_stats(
         except OSError as e:
             errors.append(ScanError(relpath=prefix, message=f"walk error: {e}"))
             continue
+
+        seen += len(entries)
+        if on_progress is not None and seen - reported >= _WALK_PROGRESS_INTERVAL:
+            on_progress(seen - reported)
+            reported = seen
 
         for de in entries:
             rel = f"{prefix}/{de.name}" if prefix else de.name
@@ -276,6 +292,9 @@ def _walk_stats(
                 file_errors[_key(rel)] = msg
                 errors.append(ScanError(relpath=rel, message=msg))
 
+    if on_progress is not None and seen > reported:
+        on_progress(seen - reported)
+
     return stats, real_relpaths, dirs, errors, file_errors
 
 
@@ -287,6 +306,7 @@ def stat_location(
     cancel: Optional[threading.Event] = None,
     normalize_unicode: bool = True,
     case_sensitive: bool = True,
+    on_progress: Optional[Callable[[int], None]] = None,
 ) -> StatResult:
     """フェーズ 1: 1 拠点を列挙してメタデータだけを集める。"""
     if not root.exists():
@@ -303,6 +323,7 @@ def stat_location(
     stats, real_relpaths, dirs, errors, file_errors = _walk_stats(
         root, exclude_patterns, cancel,
         normalize_unicode=normalize_unicode, case_sensitive=case_sensitive,
+        on_progress=on_progress,
     )
     return StatResult(
         location_name=name,
@@ -515,31 +536,45 @@ def scan_locations(
     フェーズ 1 は拠点ごとに並列化する (拠点は別サーバなので待ち時間が重なる)。
     `on_stat_done(StatResult)` が渡されていれば、拠点の列挙が終わるたびに呼ぶ。
     """
+    # 列挙は拠点ごとに並列で走るので、進捗はまとめて 1 本のカウンタに出す。
+    # 大きい共有では列挙だけで数分かかり、その間なにも出ないと止まって見える。
+    walk_bar = tqdm(desc="列挙中", unit="件") if show_progress else None
+    bar_lock = threading.Lock()
+
+    def _walk_progress(n: int) -> None:
+        with bar_lock:
+            walk_bar.update(n)
+
     stat_kwargs = dict(
         exclude_patterns=exclude_patterns,
         normalize_unicode=normalize_unicode,
         case_sensitive=case_sensitive,
+        on_progress=_walk_progress if walk_bar is not None else None,
     )
     stat_results: List[Optional[StatResult]] = [None] * len(locations)
-    if len(locations) <= 1:
-        for i, (name, root) in enumerate(locations):
-            sr = stat_location(name, root, **stat_kwargs)
-            stat_results[i] = sr
-            if on_stat_done:
-                on_stat_done(sr)
-    else:
-        cancel = threading.Event()
-        with _managed_pool(len(locations), cancel) as ex:
-            futures = {
-                ex.submit(stat_location, name, root, cancel=cancel, **stat_kwargs): i
-                for i, (name, root) in enumerate(locations)
-            }
-            for fut in as_completed(futures):
-                i = futures[fut]
-                sr = fut.result()
+    try:
+        if len(locations) <= 1:
+            for i, (name, root) in enumerate(locations):
+                sr = stat_location(name, root, **stat_kwargs)
                 stat_results[i] = sr
                 if on_stat_done:
                     on_stat_done(sr)
+        else:
+            cancel = threading.Event()
+            with _managed_pool(len(locations), cancel) as ex:
+                futures = {
+                    ex.submit(stat_location, name, root, cancel=cancel, **stat_kwargs): i
+                    for i, (name, root) in enumerate(locations)
+                }
+                for fut in as_completed(futures):
+                    i = futures[fut]
+                    sr = fut.result()
+                    stat_results[i] = sr
+                    if on_stat_done:
+                        on_stat_done(sr)
+    finally:
+        if walk_bar is not None:
+            walk_bar.close()
 
     stats: List[StatResult] = [s for s in stat_results if s is not None]
     targets = plan_hash_targets(
