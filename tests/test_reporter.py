@@ -824,6 +824,30 @@ class TestHtml:
         assert cells["ハッシュ省略件数"] == "6 件"
         assert cells["除外パターン"] == "~$*, 機密*"
 
+    def test_retry_is_recorded_when_enabled(self, tmp_path: Path):
+        """--retry を使ったことも実行条件に残す (使っていなければ出さない)。"""
+        a = make_scan("A", files={"x.txt": make_entry("h")})
+        b = make_scan("B", files={"x.txt": make_entry("h")})
+
+        def build(retry: int) -> str:
+            ctx = ReportContext(
+                started_at=datetime(2026, 1, 1),
+                finished_at=datetime(2026, 1, 1),
+                config_path=tmp_path / "c.yaml",
+                scans=[a, b],
+                comparison=compare([a, b]),
+                settings=ReportSettings(
+                    hash_mode="always", hash_algorithm="sha256", mtime_tolerance_sec=2.0,
+                    exclude_patterns=[], normalize_unicode=True, case_sensitive=True,
+                    retry=retry,
+                ),
+            )
+            body = write_html(ctx, tmp_path / f"r{retry}.html").read_text(encoding="utf-8")
+            return body.split("<h3>実行条件</h3>")[1].split("</table>")[0]
+
+        assert "読み取り再試行" not in build(0)
+        assert "最大 2 回" in build(2)
+
     def test_always_mode_omits_mtime_tolerance(self, tmp_path: Path):
         """always では更新日時を使わないので許容誤差は出さない。"""
         a = make_scan("A", files={"x.txt": make_entry("h")})

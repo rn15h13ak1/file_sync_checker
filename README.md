@@ -206,7 +206,7 @@ output:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest          # 233 テストケース
+pytest          # 236 テストケース
 pytest -v       # 詳細出力
 pytest -k mino  # 特定の名前のテストだけ
 ```

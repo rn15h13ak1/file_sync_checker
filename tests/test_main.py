@@ -222,6 +222,24 @@ class TestMainErrorPaths:
         assert any("ハッシュ省略" in r.message for r in caplog.records), caplog.text
 
 
+class TestArgParsing:
+    def test_negative_retry_is_rejected(self, monkeypatch, capsys):
+        """--retry に負値を渡したら起動前に弾く。"""
+        import main as main_mod
+
+        monkeypatch.setattr(sys, "argv", ["main.py", "--retry", "-1"])
+        with pytest.raises(SystemExit) as exc:
+            main_mod.parse_args()
+        assert exc.value.code == 2
+        assert "--retry" in capsys.readouterr().err
+
+    def test_retry_defaults_to_zero(self, monkeypatch):
+        import main as main_mod
+
+        monkeypatch.setattr(sys, "argv", ["main.py"])
+        assert main_mod.parse_args().retry == 0
+
+
 class TestHtmlAliasOutput:
     def test_html_format_emits_both_timestamped_and_latest(self, tmp_path, capsys):
         cfg_path = _write_config(tmp_path, "html")
