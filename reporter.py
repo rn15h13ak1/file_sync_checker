@@ -93,6 +93,8 @@ def _condition_rows(ctx: "ReportContext") -> List[tuple]:
         "除外パターン",
         ", ".join(s.exclude_patterns) if s.exclude_patterns else "なし",
     ))
+    if s.retry:
+        rows.append(("読み取り再試行", f"最大 {s.retry} 回"))
     rows.append((
         "ファイル名の照合",
         ("NFC 正規化あり" if s.normalize_unicode else "正規化なし")
@@ -179,6 +181,7 @@ class ReportSettings:
     exclude_patterns: List[str]
     normalize_unicode: bool
     case_sensitive: bool
+    retry: int = 0
 
 
 @dataclass

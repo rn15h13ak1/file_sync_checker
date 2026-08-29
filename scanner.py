@@ -16,6 +16,7 @@ import fnmatch
 import hashlib
 import os
 import threading
+import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
@@ -33,6 +34,9 @@ HASH_CHUNK_SIZE = 1024 * 1024  # 1 MiB
 # ファイルシステムによって更新日時の粒度が異なり (NTFS 100ns / HFS+ 1s / FAT 2s)、
 # コピーの過程で丸められるため、厳密比較では同一ファイルでも不一致になる。
 DEFAULT_MTIME_TOLERANCE_SEC = 2.0
+
+# 読み取り失敗を再試行するときの基本待ち時間 (秒)。試行ごとに倍加する。
+DEFAULT_RETRY_WAIT_SEC = 0.5
 
 HASH_MODE_ALWAYS = "always"
 HASH_MODE_SMART = "smart"
@@ -345,12 +349,29 @@ def _hash_task(
     abspath: Path,
     algorithm: str,
     cancel: Optional[threading.Event] = None,
+    retry: int = 0,
+    retry_wait_sec: float = DEFAULT_RETRY_WAIT_SEC,
 ) -> Tuple[int, str, Optional[str], Optional[str]]:
-    """Returns: (loc_index, relpath, hash, error_message)"""
-    try:
-        return loc_index, relpath, _hash_file(abspath, algorithm, cancel), None
-    except OSError as e:
-        return loc_index, relpath, None, f"{type(e).__name__}: {e}"
+    """Returns: (loc_index, relpath, hash, error_message)
+
+    ネットワーク共有では、瞬断や Office が一時的に開いているファイルなど、
+    すぐに解消する失敗が起こりうる。`retry` を指定すると、失敗したファイルだけ
+    間隔を空けて再試行する。最後まで失敗したら、その旨を添えて記録する。
+    """
+    attempts = retry + 1
+    for attempt in range(1, attempts + 1):
+        try:
+            return loc_index, relpath, _hash_file(abspath, algorithm, cancel), None
+        except OSError as e:
+            if attempt == attempts:
+                suffix = f" ({attempts} 回試行)" if retry else ""
+                return loc_index, relpath, None, f"{type(e).__name__}: {e}{suffix}"
+            if cancel is not None and cancel.wait(retry_wait_sec * attempt):
+                # 待っている間に中断された
+                raise ScanCancelled()
+            elif cancel is None:
+                time.sleep(retry_wait_sec * attempt)
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def hash_locations(
@@ -360,6 +381,8 @@ def hash_locations(
     algorithm: str,
     parallel_workers: int,
     show_progress: bool = True,
+    retry: int = 0,
+    retry_wait_sec: float = DEFAULT_RETRY_WAIT_SEC,
 ) -> List[ScanResult]:
     """フェーズ 2: 対象ファイルのハッシュを計算し、拠点ごとの ScanResult を組み立てる。
 
@@ -388,7 +411,8 @@ def hash_locations(
         cancel = threading.Event()
         if parallel_workers <= 1 or len(tasks) <= 1:
             iterator: Iterable = (
-                _hash_task(i, rel, ap, algorithm) for i, rel, ap in tasks
+                _hash_task(i, rel, ap, algorithm, None, retry, retry_wait_sec)
+                for i, rel, ap in tasks
             )
             if show_progress:
                 iterator = tqdm(iterator, total=len(tasks), desc=desc, unit="file")
@@ -397,7 +421,9 @@ def hash_locations(
         else:
             with _managed_pool(parallel_workers, cancel) as ex:
                 futures = [
-                    ex.submit(_hash_task, i, rel, ap, algorithm, cancel)
+                    ex.submit(
+                        _hash_task, i, rel, ap, algorithm, cancel, retry, retry_wait_sec
+                    )
                     for i, rel, ap in tasks
                 ]
                 completed: Iterable = as_completed(futures)
@@ -450,6 +476,7 @@ def scan_locations(
     normalize_unicode: bool = True,
     case_sensitive: bool = True,
     show_progress: bool = True,
+    retry: int = 0,
     on_stat_done=None,
 ) -> List[ScanResult]:
     """全拠点を 2 フェーズでスキャンする。
@@ -493,6 +520,7 @@ def scan_locations(
         algorithm=hash_algorithm,
         parallel_workers=parallel_workers,
         show_progress=show_progress,
+        retry=retry,
     )
 
 

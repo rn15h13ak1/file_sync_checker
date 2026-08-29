@@ -55,7 +55,15 @@ def parse_args() -> argparse.Namespace:
         "--hash-mode", choices=sorted(HASH_MODES), default=None,
         help="ハッシュ計算範囲を上書き (設定: performance.hash_mode)",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--retry", type=int, default=0, metavar="N",
+        help="読み取りに失敗したファイルを N 回まで再試行する "
+             "(既定: 0 = 再試行しない)。ネットワークの瞬断や一時的なロック向け",
+    )
+    args = parser.parse_args()
+    if args.retry < 0:
+        parser.error("--retry は0以上を指定してください")
+    return args
 
 
 def _resolve_default_config() -> Path:
@@ -87,7 +95,9 @@ def _write_latest_alias(src: Path, dst: Path) -> Path:
     return dst
 
 
-def run(config: Config, config_path: Path, *, show_progress: bool, log) -> int:
+def run(
+    config: Config, config_path: Path, *, show_progress: bool, log, retry: int = 0
+) -> int:
     started_at = datetime.now()
     log.info("スキャン開始: %d 拠点", len(config.locations))
 
@@ -111,6 +121,7 @@ def run(config: Config, config_path: Path, *, show_progress: bool, log) -> int:
         normalize_unicode=config.matching.normalize_unicode,
         case_sensitive=config.matching.case_sensitive,
         show_progress=show_progress,
+        retry=retry,
         on_stat_done=_stat_done,
     )
     for s in scans:
@@ -141,6 +152,7 @@ def run(config: Config, config_path: Path, *, show_progress: bool, log) -> int:
             exclude_patterns=config.exclude_patterns,
             normalize_unicode=config.matching.normalize_unicode,
             case_sensitive=config.matching.case_sensitive,
+            retry=retry,
         ),
     )
 
@@ -221,6 +233,7 @@ def main() -> int:
             config_path,
             show_progress=not args.no_progress,
             log=log,
+            retry=args.retry,
         )
     except (KeyboardInterrupt, ScanCancelled):
         log.warning("中断されました")

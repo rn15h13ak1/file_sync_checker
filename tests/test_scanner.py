@@ -12,8 +12,11 @@ import pytest
 
 from .conftest import skip_or_fail
 
+import scanner
+
 from scanner import (
     HASH_CHUNK_SIZE,
+    _hash_task,
     HASH_MODE_ALWAYS,
     HASH_MODE_SMART,
     ScanCancelled,
@@ -554,6 +557,80 @@ class TestScanLocations:
         assert result.files["big.bin"].hash == hashlib.sha256(payload).hexdigest()
         assert result.files["big.bin"].size == len(payload)
 
+class TestRetry:
+    """読み取り失敗の再試行。
+
+    ネットワーク共有では瞬断や一時的なロックですぐ直る失敗が起こる。
+    1件でも失敗すると終了コード 3 (スキャン不完全) になるため、
+    定期実行では実害のない失敗で警告が上がりがちだった。
+    """
+
+    def _flaky(self, monkeypatch, fail_times: int):
+        calls = {"n": 0}
+
+        def fake_hash(path, algorithm, cancel=None):
+            calls["n"] += 1
+            if calls["n"] <= fail_times:
+                raise OSError(11, "Resource temporarily unavailable")
+            return "recovered"
+
+        monkeypatch.setattr(scanner, "_hash_file", fake_hash)
+        return calls
+
+    def test_transient_failure_recovers(self, monkeypatch, tmp_path: Path):
+        calls = self._flaky(monkeypatch, fail_times=2)
+        _, _, digest, err = _hash_task(
+            0, "f.txt", tmp_path / "f.txt", "sha256", None,
+            retry=3, retry_wait_sec=0.001,
+        )
+        assert digest == "recovered"
+        assert err is None
+        assert calls["n"] == 3
+
+    def test_gives_up_after_the_configured_attempts(self, monkeypatch, tmp_path: Path):
+        calls = self._flaky(monkeypatch, fail_times=99)
+        _, _, digest, err = _hash_task(
+            0, "f.txt", tmp_path / "f.txt", "sha256", None,
+            retry=2, retry_wait_sec=0.001,
+        )
+        assert digest is None
+        assert calls["n"] == 3            # 初回 + 再試行2回
+        assert "3 回試行" in err          # 何回試したかを記録する
+
+    def test_no_retry_by_default(self, monkeypatch, tmp_path: Path):
+        """既定は現状維持 (1回で諦める)。"""
+        calls = self._flaky(monkeypatch, fail_times=99)
+        _, _, digest, err = _hash_task(0, "f.txt", tmp_path / "f.txt", "sha256")
+        assert digest is None
+        assert calls["n"] == 1
+        assert "回試行" not in err        # 再試行していないので回数は書かない
+
+    def test_cancel_during_retry_wait(self, monkeypatch, tmp_path: Path):
+        """再試行の待ち時間中でも中断できる。"""
+        self._flaky(monkeypatch, fail_times=99)
+        cancel = threading.Event()
+        cancel.set()
+        with pytest.raises(ScanCancelled):
+            _hash_task(
+                0, "f.txt", tmp_path / "f.txt", "sha256", cancel,
+                retry=3, retry_wait_sec=0.001,
+            )
+
+    def test_scan_locations_passes_retry_through(self, monkeypatch, tmp_path: Path):
+        calls = self._flaky(monkeypatch, fail_times=1)
+        _write(tmp_path / "A" / "f.txt", "x")
+        _write(tmp_path / "B" / "f.txt", "x")
+        monkeypatch.setattr(scanner, "DEFAULT_RETRY_WAIT_SEC", 0.001)
+        scans = scan_locations(
+            [("A", tmp_path / "A"), ("B", tmp_path / "B")],
+            exclude_patterns=[], parallel_workers=1,
+            hash_algorithm="sha256", show_progress=False, retry=2,
+        )
+        # 1回目の失敗を再試行で吸収し、エラーが残らない
+        assert all(not s.file_errors for s in scans), [s.file_errors for s in scans]
+
+
+class TestCancellation:
     def test_hash_file_stops_on_cancel(self, tmp_path: Path):
         """中断フラグが立っていれば大きいファイルの途中でも止まる。"""
         big = tmp_path / "big.bin"
