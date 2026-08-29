@@ -16,6 +16,7 @@ import scanner
 
 from scanner import (
     HASH_CHUNK_SIZE,
+    ExcludeMatcher,
     _hash_task,
     HASH_MODE_ALWAYS,
     HASH_MODE_SMART,
@@ -149,6 +150,53 @@ class TestExcludePatterns:
         (tmp_path / "b").write_text("2")
         result = _scan(tmp_path, exclude=[])
         assert set(result.files.keys()) == {"a", "b"}
+
+
+class TestExcludeMatcher:
+    """事前コンパイルした除外判定が fnmatch と同じ結果になること。
+
+    エントリ×パターンの回数だけ fnmatch を呼ぶと内部で normcase が
+    2 回走り、列挙フェーズの 4 割を占めていたため 1 本の正規表現にまとめた。
+    速度のために判定がずれては意味がないので、fnmatch と突き合わせる。
+    """
+
+    CASES = [
+        (["*.tmp"], "a.tmp", "sub/a.tmp"),
+        (["~$*"], "~$book.xlsx", "d/~$book.xlsx"),
+        ([".DS_Store"], ".DS_Store", "x/.DS_Store"),
+        (["*.tmp", "*.bak"], "a.bak", "a.bak"),
+        (["作業中/*"], "資料.docx", "作業中/資料.docx"),
+        (["*/一時/*"], "x.txt", "a/一時/x.txt"),
+        # glob として特別な意味を持たない文字が正規表現として解釈されないこと
+        (["a+b.txt"], "a+b.txt", "a+b.txt"),
+        (["report(1).docx"], "report(1).docx", "report(1).docx"),
+    ]
+
+    @pytest.mark.parametrize("patterns, name, relpath", CASES)
+    def test_matches_agree_with_fnmatch(self, patterns, name, relpath):
+        import fnmatch as fn
+
+        expected = any(
+            fn.fnmatch(relpath if "/" in p else name, p) for p in patterns
+        )
+        assert ExcludeMatcher(patterns).matches(name, relpath) is expected
+
+    def test_non_matching_names_are_kept(self):
+        m = ExcludeMatcher(["*.tmp", "作業中/*"])
+        assert m.matches("keep.txt", "納品/keep.txt") is False
+        assert m.matches("keep.txt", "作業中/keep.txt") is True
+        assert m.matches("x.tmp", "納品/x.tmp") is True
+
+    def test_empty_patterns_match_nothing(self):
+        m = ExcludeMatcher([])
+        assert not m
+        assert m.matches("anything.txt", "a/anything.txt") is False
+
+    def test_patterns_do_not_bleed_into_each_other(self):
+        """複数パターンを 1 本の正規表現にまとめても、部分一致で誤爆しない。"""
+        m = ExcludeMatcher(["*.tmp", "*.bak"])
+        assert m.matches("a.tmpx", "a.tmpx") is False
+        assert m.matches("tmp", "tmp") is False
 
 
 class TestSymlinks:
