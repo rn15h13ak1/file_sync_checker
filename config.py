@@ -33,6 +33,9 @@ class OutputConfig:
     output_dir: Path
     # HTML の 1 表あたりの最大行数。0 は無制限。Excel には適用しない。
     max_table_rows: int = DEFAULT_MAX_TABLE_ROWS
+    # 残す過去レポートの実行回数。0 は削除しない (既定)。
+    # 削除は元に戻せないので、明示的に指定したときだけ動かす。
+    keep_reports: int = 0
 
 
 @dataclass(frozen=True)
@@ -106,6 +109,15 @@ def apply_overrides(
     return replace(config, output=output, performance=performance)
 
 
+def _positive_int(value, key: str) -> int:
+    """0 以上の整数として検証する (0 は「無制限 / 無効」を意味する)。"""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(f"{key} は整数で指定してください (現在: {value!r})")
+    if value < 0:
+        raise ConfigError(f"{key} は0以上を指定してください")
+    return value
+
+
 def _resolve(p: Path, base: Path) -> Path:
     """相対パスは base からの相対として解決し、絶対パスはそのまま返す。"""
     return p if p.is_absolute() else (base / p).resolve()
@@ -174,17 +186,17 @@ def load_config(path: str | Path) -> Config:
             f"output.format は {sorted(SUPPORTED_FORMATS)} のいずれかを指定してください (現在: {fmt})"
         )
     output_dir = _resolve(Path(str(output_raw.get("output_dir", "./reports"))), base_dir)
-    raw_limit = output_raw.get("max_table_rows", DEFAULT_MAX_TABLE_ROWS)
-    if isinstance(raw_limit, bool) or not isinstance(raw_limit, int):
-        raise ConfigError(
-            f"output.max_table_rows は整数で指定してください (現在: {raw_limit!r})"
-        )
-    if raw_limit < 0:
-        raise ConfigError(
-            "output.max_table_rows は0以上を指定してください (0 は無制限)"
-        )
+    raw_limit = _positive_int(
+        output_raw.get("max_table_rows", DEFAULT_MAX_TABLE_ROWS), "output.max_table_rows"
+    )
+    keep_reports = _positive_int(
+        output_raw.get("keep_reports", 0), "output.keep_reports"
+    )
     output = OutputConfig(
-        format=fmt, output_dir=output_dir, max_table_rows=raw_limit
+        format=fmt,
+        output_dir=output_dir,
+        max_table_rows=raw_limit,
+        keep_reports=keep_reports,
     )
 
     perf_raw = raw.get("performance") or {}

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 import os
 import sys
 from pathlib import Path
@@ -220,6 +221,123 @@ class TestMainErrorPaths:
         with caplog.at_level(logging.INFO, logger="test_main_skipped"):
             run(config, cfg_path, show_progress=False, log=log)
         assert any("ハッシュ省略" in r.message for r in caplog.records), caplog.text
+
+
+class TestPruneOldReports:
+    """古いレポートの削除。削除は元に戻せないので、対象の厳密さを重点的に確認する。"""
+
+    def _make_reports(self, out_dir: Path, slugs: list) -> None:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for slug in slugs:
+            (out_dir / f"sync-check-{slug}.html").write_text("h", encoding="utf-8")
+            (out_dir / f"sync-check-{slug}.xlsx").write_text("x", encoding="utf-8")
+
+    def test_keeps_the_newest_runs(self, tmp_path):
+        from main import _prune_old_reports
+
+        out = tmp_path / "reports"
+        slugs = ["20260101-090000", "20260102-090000", "20260103-090000",
+                 "20260104-090000", "20260105-090000"]
+        self._make_reports(out, slugs)
+
+        _prune_old_reports(out, keep=2, log=_silent_logger())
+
+        remaining = sorted(p.name for p in out.iterdir())
+        assert remaining == [
+            "sync-check-20260104-090000.html", "sync-check-20260104-090000.xlsx",
+            "sync-check-20260105-090000.html", "sync-check-20260105-090000.xlsx",
+        ]
+
+    def test_counts_runs_not_files(self, tmp_path):
+        """1回の実行が html と xlsx を出していれば、それらで1回分。"""
+        from main import _prune_old_reports
+
+        out = tmp_path / "reports"
+        self._make_reports(out, ["20260101-090000", "20260102-090000"])
+        _prune_old_reports(out, keep=1, log=_silent_logger())
+        assert len(list(out.iterdir())) == 2   # 新しい方の html と xlsx
+
+    def test_never_deletes_the_stable_alias(self, tmp_path):
+        """固定名 sync-check.html はブックマーク先なので消さない。"""
+        from main import _prune_old_reports
+
+        out = tmp_path / "reports"
+        self._make_reports(out, ["20260101-090000", "20260102-090000"])
+        (out / "sync-check.html").write_text("latest", encoding="utf-8")
+
+        _prune_old_reports(out, keep=1, log=_silent_logger())
+        assert (out / "sync-check.html").is_file()
+
+    def test_never_deletes_unrelated_files(self, tmp_path):
+        """このツールの命名規則に一致しないファイルには触れない。"""
+        from main import _prune_old_reports
+
+        out = tmp_path / "reports"
+        self._make_reports(out, ["20260101-090000", "20260102-090000"])
+        others = [
+            "メモ.txt",
+            "sync-check.xlsx",              # 固定名
+            "sync-check-2026.html",         # 桁数が違う
+            "sync-check-20260101.html",     # 時刻が無い
+            "sync-check-20260101-090000.csv",   # 対象外の拡張子
+            "old-sync-check-20260101-090000.html",  # 前置きがある
+            "sync-check-20260101-090000.html.bak",
+        ]
+        for name in others:
+            (out / name).write_text("keep", encoding="utf-8")
+        (out / "サブフォルダ").mkdir()
+
+        _prune_old_reports(out, keep=1, log=_silent_logger())
+
+        for name in others:
+            assert (out / name).is_file(), f"消してはいけない: {name}"
+        assert (out / "サブフォルダ").is_dir()
+
+    def test_zero_keeps_everything(self, tmp_path):
+        """既定 (0) では削除しない。既に配布済みの環境で勝手に消さないため。"""
+        from main import _prune_old_reports
+
+        out = tmp_path / "reports"
+        self._make_reports(out, ["20260101-090000", "20260102-090000"])
+        _prune_old_reports(out, keep=0, log=_silent_logger())
+        assert len(list(out.iterdir())) == 4
+
+    def test_fewer_reports_than_keep_is_fine(self, tmp_path):
+        from main import _prune_old_reports
+
+        out = tmp_path / "reports"
+        self._make_reports(out, ["20260101-090000"])
+        _prune_old_reports(out, keep=10, log=_silent_logger())
+        assert len(list(out.iterdir())) == 2
+
+    def test_deletion_failure_does_not_stop_the_run(self, tmp_path, monkeypatch):
+        """削除に失敗しても実行自体は成功させる (レポートは既に書けている)。"""
+        from main import _prune_old_reports
+
+        out = tmp_path / "reports"
+        self._make_reports(out, ["20260101-090000", "20260102-090000"])
+        monkeypatch.setattr(
+            Path, "unlink",
+            lambda self, **k: (_ for _ in ()).throw(OSError("busy")),
+        )
+        _prune_old_reports(out, keep=1, log=_silent_logger())   # 例外を投げない
+        assert len(list(out.iterdir())) == 4
+
+    def test_end_to_end_through_run(self, tmp_path, capsys):
+        """run() から実際に古いレポートが消える。"""
+        cfg_path = _write_config(tmp_path, "both")
+        out = tmp_path / "reports"
+        self._make_reports(out, ["20250101-090000", "20250102-090000"])
+
+        config = load_config(cfg_path)
+        config = replace(config, output=replace(config.output, keep_reports=1))
+        run(config, cfg_path, show_progress=False, log=_silent_logger())
+        capsys.readouterr()
+
+        names = sorted(p.name for p in out.iterdir())
+        # 今回の実行分 (html/xlsx) と固定名だけが残る
+        assert "sync-check.html" in names
+        assert not any(n.startswith("sync-check-2025") for n in names), names
 
 
 class TestProgressBarSuppression:

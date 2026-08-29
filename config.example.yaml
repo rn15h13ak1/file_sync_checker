@@ -47,6 +47,18 @@ output:
   # この上限は HTML だけに適用され、Excel には全件が出力されます。
   max_table_rows: 20000
 
+  # 残す過去レポートの実行回数 (0 = 削除しない)。
+  # 省略した場合は 0 (削除しない) です。
+  #
+  # 定期実行するとレポートが際限なく溜まります
+  # (大きい共有だと 1 回あたり HTML 22MB + Excel 3MB、毎日なら年間 9GB 規模)。
+  # 指定すると、新しいレポートを書いた後に古いものを削除して直近 N 回分だけ残します。
+  #
+  # 削除対象は sync-check-YYYYMMDD-HHMMSS.{html,xlsx} に完全一致するファイルだけです。
+  # 固定名の sync-check.html や、出力先に置いた無関係なファイルは削除しません。
+  # 1 回の実行が html と xlsx を出していれば、それらで 1 回分と数えます。
+  keep_reports: 0
+
 performance:
   parallel_workers: 4
   hash_algorithm: "sha256"

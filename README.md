@@ -93,6 +93,7 @@ HTML 出力時は併せて `<output_dir>/sync-check.html` (タイムスタンプ
 - `output.format`: `excel` / `html` / `both`
 - `output.output_dir`: レポート出力先
 - `output.max_table_rows`: HTML の 1 表あたりの最大行数（既定 `20000`、`0` で無制限）
+- `output.keep_reports`: 残す過去レポートの実行回数（既定 `0` = 削除しない）
 - `performance.parallel_workers`: ハッシュ並列計算スレッド数
 - `performance.hash_algorithm`: 現状 `sha256` のみ
 - `performance.hash_mode`: `always`（既定）/ `smart`
@@ -189,6 +190,30 @@ output:
   （フォルダ移動などで差分自体が数万件になることがあるため）
 - メールで送るなど軽さを優先する場合は `5000` 程度が扱いやすいサイズです
 
+### 古いレポートの整理（`output.keep_reports`）
+
+定期実行するとレポートが際限なく溜まります（大きい共有だと 1 回あたり HTML 22MB +
+Excel 3MB。毎日実行すれば年間 9GB 規模）。
+
+```yaml
+output:
+  keep_reports: 30   # 直近30回分だけ残す（0 = 削除しない）
+```
+
+**既定は `0`（削除しない）** です。削除は元に戻せないため、明示的に指定したときだけ
+動きます。設定に書かなければ従来どおり何も削除しません。
+
+削除は新しいレポートを書き終えた後に実行され、次の条件をすべて満たすファイルだけが
+対象になります。
+
+- ファイル名が `sync-check-YYYYMMDD-HHMMSS.{html,xlsx}` に**完全一致**する
+- 出力ディレクトリ直下の通常ファイル
+
+したがって、固定名の `sync-check.html`（最新への安定リンク）や、出力先に置いた
+無関係なファイル・サブフォルダは削除されません。1 回の実行が html と xlsx の両方を
+出していれば、それらで 1 回分と数えます。削除に失敗しても実行自体は成功します
+（レポートは既に書けており、後片付けの失敗で終了コードは変えません）。
+
 ### 実行条件の記録
 
 レポートのサマリーには、その結果がどういう条件で得られたかを記録します。
@@ -215,7 +240,7 @@ output:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest          # 256 テストケース
+pytest          # 264 テストケース
 pytest -v       # 詳細出力
 pytest -k mino  # 特定の名前のテストだけ
 ```

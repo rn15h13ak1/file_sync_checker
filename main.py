@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import sys
 from datetime import datetime
@@ -98,6 +99,46 @@ def _write_latest_alias(src: Path, dst: Path) -> Path:
     return dst
 
 
+# このツールが出力したタイムスタンプ付きレポートだけを表す。
+# 削除対象を誤らないよう、桁数まで含めて厳密に一致させる。
+# 固定名の sync-check.html (最新への安定リンク) はこれに一致しないので消えない。
+_REPORT_NAME_RE = re.compile(r"^sync-check-(\d{8}-\d{6})\.(?:html|xlsx)$")
+
+
+def _prune_old_reports(out_dir: Path, keep: int, log) -> None:
+    """古いレポートを削除し、直近 `keep` 回分だけ残す。
+
+    定期実行では出力ディレクトリにレポートが際限なく溜まる
+    (大きい共有だと HTML 22MB + Excel 3MB で年間 9GB 規模)。
+
+    削除は元に戻せないため、次の条件をすべて満たすファイルだけを対象にする:
+      - このツールの命名規則 `sync-check-YYYYMMDD-HHMMSS.{html,xlsx}` に完全一致
+      - 出力ディレクトリ直下の通常ファイル
+    「実行回数」で数えるので、1 回の実行が html と xlsx を出していれば
+    それらは 1 回分として扱う。削除に失敗しても実行自体は成功させる
+    (レポートは既に書けており、後片付けの失敗で終了コードを変えない)。
+    """
+    if keep <= 0:
+        return
+
+    runs: dict = {}
+    for path in out_dir.iterdir():
+        if not path.is_file():
+            continue
+        m = _REPORT_NAME_RE.match(path.name)
+        if m:
+            runs.setdefault(m.group(1), []).append(path)
+
+    # タイムスタンプの新しい順に keep 回分を残す (ファイル名がそのまま時系列)
+    for slug in sorted(runs, reverse=True)[keep:]:
+        for path in runs[slug]:
+            try:
+                path.unlink()
+                log.info("  古いレポートを削除: %s", path.name)
+            except OSError as e:
+                log.warning("  レポートの削除に失敗: %s (%s)", path.name, e)
+
+
 def run(
     config: Config, config_path: Path, *, show_progress: bool, log, retry: int = 0
 ) -> int:
@@ -173,6 +214,9 @@ def run(
         # 安定リンク用: タイムスタンプ無しの最新レポートを上書きで生成する
         # (ブックマークや自動化スクリプトから常に最新を参照できるようにするため)
         written.append(_write_latest_alias(out_html, out_dir / "sync-check.html"))
+
+    # 新しいレポートを書いた後に、古い分を片付ける
+    _prune_old_reports(out_dir, config.output.keep_reports, log)
 
     # コンソールサマリー
     elapsed = (finished_at - started_at).total_seconds()
