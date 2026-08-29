@@ -102,6 +102,45 @@ class TestExcludePatterns:
         # ディレクトリ側も .git は記録されない
         assert ".git" not in result.dirs
 
+    def test_path_pattern_excludes_by_relative_path(self, tmp_path: Path):
+        """`/` を含むパターンは相対パス全体と照合する。
+
+        以前はファイル名としか照合せず、パスを書いても 1 件も除外されないのに
+        エラーも警告も出なかった。
+        """
+        (tmp_path / "作業中").mkdir()
+        (tmp_path / "納品").mkdir()
+        (tmp_path / "作業中" / "資料.docx").write_text("x")
+        (tmp_path / "納品" / "資料.docx").write_text("y")
+
+        assert set(_scan(tmp_path, exclude=["作業中/*"]).files) == {"納品/資料.docx"}
+        assert set(_scan(tmp_path, exclude=["納品/*"]).files) == {"作業中/資料.docx"}
+        assert set(_scan(tmp_path, exclude=["*/資料.docx"]).files) == set()
+
+    def test_deep_path_pattern(self, tmp_path: Path):
+        (tmp_path / "a" / "一時" / "b").mkdir(parents=True)
+        (tmp_path / "a" / "一時" / "b" / "x.txt").write_text("x")
+        (tmp_path / "a" / "keep.txt").write_text("k")
+        result = _scan(tmp_path, exclude=["a/一時/*"])
+        assert set(result.files) == {"a/keep.txt"}
+
+    def test_name_pattern_still_matches_at_any_depth(self, tmp_path: Path):
+        """`/` を含まないパターンは従来どおりファイル名照合 (深さを問わない)。"""
+        (tmp_path / "sub" / "deep").mkdir(parents=True)
+        (tmp_path / "sub" / "deep" / "a.tmp").write_text("x")
+        (tmp_path / "b.tmp").write_text("y")
+        (tmp_path / "keep.txt").write_text("k")
+        assert set(_scan(tmp_path, exclude=["*.tmp"]).files) == {"keep.txt"}
+
+    def test_path_pattern_can_exclude_a_directory_subtree(self, tmp_path: Path):
+        """ディレクトリにパスパターンが当たれば配下ごと降りない。"""
+        (tmp_path / "old" / "2019").mkdir(parents=True)
+        (tmp_path / "old" / "2019" / "x.txt").write_text("x")
+        (tmp_path / "new.txt").write_text("n")
+        result = _scan(tmp_path, exclude=["old/2019"])
+        assert set(result.files) == {"new.txt"}
+        assert "old/2019" not in result.dirs
+
     def test_empty_excludes_keeps_everything(self, tmp_path: Path):
         (tmp_path / "a").write_text("1")
         (tmp_path / "b").write_text("2")

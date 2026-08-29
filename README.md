@@ -69,7 +69,7 @@ HTML 出力時は併せて `<output_dir>/sync-check.html` (タイムスタンプ
 `config.example.yaml` を参照。主な項目：
 
 - `locations`: 比較対象の拠点（2件以上）
-- `exclude_patterns`: ファイル名・ディレクトリ名の glob 除外（`~$*` 等）
+- `exclude_patterns`: glob 除外。`/` を含まなければファイル名・ディレクトリ名、含めば相対パス全体と照合
 - `matching.normalize_unicode`: ファイル名を NFC 正規化して突き合わせる（既定 `true`）
 - `matching.case_sensitive`: ファイル名の大文字小文字を区別する（既定 `true`）
 - `output.format`: `excel` / `html` / `both`
@@ -78,6 +78,17 @@ HTML 出力時は併せて `<output_dir>/sync-check.html` (タイムスタンプ
 - `performance.hash_algorithm`: 現状 `sha256` のみ
 - `performance.hash_mode`: `always`（既定）/ `smart`
 - `performance.mtime_tolerance_sec`: `smart` で更新日時を一致とみなす許容誤差（既定 2 秒）
+
+### 除外パターン
+
+`exclude_patterns` の各パターンは、`/` を含むかどうかで照合対象が変わります。
+
+| パターン | 照合対象 | 例 |
+|---|---|---|
+| `/` を含まない | ファイル名・ディレクトリ名（深さを問わない） | `*.tmp`, `~$*`, `Thumbs.db` |
+| `/` を含む | ルートからの相対パス全体 | `作業中/*`, `a/一時/*`, `*/資料.docx` |
+
+ディレクトリにパターンが当たった場合は、その配下ごと走査しません。
 
 ### ファイル名の突き合わせ
 
@@ -158,7 +169,7 @@ HTML 出力時は併せて `<output_dir>/sync-check.html` (タイムスタンプ
 
 ```bash
 pip install -r requirements-dev.txt
-pytest          # 212 テストケース
+pytest          # 216 テストケース
 pytest -v       # 詳細出力
 pytest -k mino  # 特定の名前のテストだけ
 ```

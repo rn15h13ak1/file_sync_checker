@@ -125,8 +125,21 @@ def _managed_pool(max_workers: int, cancel: threading.Event):
         executor.shutdown(wait=True)
 
 
-def _is_excluded(name: str, patterns: Iterable[str]) -> bool:
-    return any(fnmatch.fnmatch(name, p) for p in patterns)
+def _is_excluded(name: str, relpath: str, patterns: Iterable[str]) -> bool:
+    """除外パターンに該当するか判定する。
+
+    `/` を含まないパターンはファイル名・ディレクトリ名に対して照合する
+    (`*.tmp`, `~$*` など従来どおり)。`/` を含むパターンはルートからの相対パス
+    全体に対して照合する (`作業中/*`, `*/一時/*` など)。
+
+    パスを含むパターンをファイル名としか照合しないと、書いた側は除外できた
+    つもりなのに 1 件も除外されず、しかもエラーにも警告にもならない。
+    """
+    for p in patterns:
+        target = relpath if "/" in p else name
+        if fnmatch.fnmatch(target, p):
+            return True
+    return False
 
 
 def match_key(
@@ -196,9 +209,9 @@ def _walk_stats(
             continue
 
         for de in entries:
-            if _is_excluded(de.name, exclude_patterns):
-                continue
             rel = f"{prefix}/{de.name}" if prefix else de.name
+            if _is_excluded(de.name, rel, exclude_patterns):
+                continue
             try:
                 if de.is_dir():
                     dirs.append(_key(rel))
