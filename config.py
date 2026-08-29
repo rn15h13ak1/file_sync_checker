@@ -12,6 +12,12 @@ from scanner import DEFAULT_MTIME_TOLERANCE_SEC, HASH_MODE_ALWAYS, HASH_MODES
 
 
 SUPPORTED_FORMATS = {"excel", "html", "both"}
+
+# HTML レポートの 1 つの表に出す最大行数。
+# 設定ファイルに書かれていない場合の既定値 (既に配布済みの config.yaml でも
+# 巨大なレポートが開けなくなる問題を避けられるようにするため)。
+# 実測: 20,000 行はロード 1.1 秒で操作可能、50,000 行はブラウザが 30 秒以上無応答。
+DEFAULT_MAX_TABLE_ROWS = 20_000
 SUPPORTED_HASH_ALGOS = {"sha256"}
 
 
@@ -25,6 +31,8 @@ class Location:
 class OutputConfig:
     format: str
     output_dir: Path
+    # HTML の 1 表あたりの最大行数。0 は無制限。Excel には適用しない。
+    max_table_rows: int = DEFAULT_MAX_TABLE_ROWS
 
 
 @dataclass(frozen=True)
@@ -166,7 +174,18 @@ def load_config(path: str | Path) -> Config:
             f"output.format は {sorted(SUPPORTED_FORMATS)} のいずれかを指定してください (現在: {fmt})"
         )
     output_dir = _resolve(Path(str(output_raw.get("output_dir", "./reports"))), base_dir)
-    output = OutputConfig(format=fmt, output_dir=output_dir)
+    raw_limit = output_raw.get("max_table_rows", DEFAULT_MAX_TABLE_ROWS)
+    if isinstance(raw_limit, bool) or not isinstance(raw_limit, int):
+        raise ConfigError(
+            f"output.max_table_rows は整数で指定してください (現在: {raw_limit!r})"
+        )
+    if raw_limit < 0:
+        raise ConfigError(
+            "output.max_table_rows は0以上を指定してください (0 は無制限)"
+        )
+    output = OutputConfig(
+        format=fmt, output_dir=output_dir, max_table_rows=raw_limit
+    )
 
     perf_raw = raw.get("performance") or {}
     workers = int(perf_raw.get("parallel_workers", 4))

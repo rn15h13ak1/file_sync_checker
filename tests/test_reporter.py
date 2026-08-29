@@ -972,6 +972,81 @@ class TestHtml:
             f"ピーク {peak/1024**2:.1f}MB — write_only が外れていないか確認"
         )
 
+    def _limited_ctx(self, tmp_path: Path, n_rows: int, limit: int) -> ReportContext:
+        ctx = _big_ctx(tmp_path, n_rows=n_rows)
+        ctx.settings = ReportSettings(
+            hash_mode="always", hash_algorithm="sha256", mtime_tolerance_sec=2.0,
+            exclude_patterns=[], normalize_unicode=True, case_sensitive=True,
+            max_table_rows=limit,
+        )
+        return ctx
+
+    def test_table_rows_are_capped_with_a_note(self, tmp_path: Path):
+        """上限を超えた行は描画せず、省略件数を注記する。
+
+        行数がブラウザの処理能力を超えるとレポート自体が開けなくなる
+        (実測: 50,000 行で 30 秒以上無応答)。
+        """
+        ctx = self._limited_ctx(tmp_path, n_rows=100, limit=30)
+        body = write_html(ctx, tmp_path / "out.html").read_text(encoding="utf-8")
+
+        section = body.split('<section id="all">')[1].split("</section>")[0]
+        assert section.count('class="file-row"') == 30
+        assert "(100 件)" in section          # 見出しは実際の総数を出す
+        assert "残り 70 件" in section
+        assert "output.max_table_rows" in section
+
+    def test_capped_report_only_carries_rendered_rows_in_json(self, tmp_path: Path):
+        """詳細データも描画した行の分だけにする (ファイルサイズが比例して縮む)。"""
+        ctx = self._limited_ctx(tmp_path, n_rows=100, limit=30)
+        data = _extract_report_data(write_html(ctx, tmp_path / "out.html"))
+        assert len(data["rows"]) == 30
+
+    def test_no_cap_when_limit_is_zero(self, tmp_path: Path):
+        ctx = self._limited_ctx(tmp_path, n_rows=100, limit=0)
+        body = write_html(ctx, tmp_path / "out.html").read_text(encoding="utf-8")
+        section = body.split('<section id="all">')[1].split("</section>")[0]
+        assert section.count('class="file-row"') == 100
+        assert 'class="truncated"' not in section
+
+    def test_no_note_when_under_the_limit(self, tmp_path: Path):
+        ctx = self._limited_ctx(tmp_path, n_rows=10, limit=30)
+        body = write_html(ctx, tmp_path / "out.html").read_text(encoding="utf-8")
+        # CSS 定義には .truncated があるので、注記の実体で判定する
+        assert 'class="truncated"' not in body
+        assert "省略しました" not in body
+
+    def test_cap_applies_to_diff_sections_too(self, tmp_path: Path):
+        """差分セクションも上限の対象。差分自体が巨大になることがあるため。"""
+        files_a = {f"f{i}.txt": make_entry(f"a{i}") for i in range(50)}
+        files_b = {f"f{i}.txt": make_entry(f"b{i}") for i in range(50)}
+        a = make_scan("A", files=files_a)
+        b = make_scan("B", files=files_b)
+        ctx = ReportContext(
+            started_at=datetime(2026, 1, 1),
+            finished_at=datetime(2026, 1, 1),
+            config_path=tmp_path / "c.yaml",
+            scans=[a, b],
+            comparison=compare([a, b]),
+            settings=ReportSettings(
+                hash_mode="always", hash_algorithm="sha256", mtime_tolerance_sec=2.0,
+                exclude_patterns=[], normalize_unicode=True, case_sensitive=True,
+                max_table_rows=20,
+            ),
+        )
+        body = write_html(ctx, tmp_path / "out.html").read_text(encoding="utf-8")
+        mismatch = body.split('<section id="mismatch">')[1].split("</section>")[0]
+        assert mismatch.count('class="file-row"') == 20
+        assert "残り 30 件" in mismatch
+
+    def test_excel_is_not_capped(self, tmp_path: Path):
+        """全件を確認する手段として Excel は残す (上限を適用しない)。"""
+        ctx = self._limited_ctx(tmp_path, n_rows=100, limit=30)
+        out = write_excel(ctx, tmp_path / "out.xlsx")
+        from openpyxl import load_workbook
+        ws = load_workbook(out)["全ファイル一覧"]
+        assert ws.max_row == 1 + 100
+
     def test_report_size_scales_modestly_with_row_count(self, tmp_path: Path):
         """1 行あたりの出力バイト数に上限を設ける (肥大の再発防止)。
 

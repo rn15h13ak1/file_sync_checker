@@ -38,6 +38,15 @@ output:
   format: "excel"
   output_dir: "./reports"
 
+  # HTML レポートの 1 つの表に出す最大行数 (0 = 無制限)。
+  # 省略した場合は 20000 が使われます。
+  #
+  # 行数が多すぎるとブラウザがレポートを開けなくなります
+  # (実測: 3拠点で 20,000 行はロード 1.1 秒で操作可能、50,000 行は 30 秒以上無応答)。
+  # 上限を超えた分は表示せず、末尾に省略件数を注記します。
+  # この上限は HTML だけに適用され、Excel には全件が出力されます。
+  max_table_rows: 20000
+
 performance:
   parallel_workers: 4
   hash_algorithm: "sha256"

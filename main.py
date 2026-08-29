@@ -153,6 +153,7 @@ def run(
             normalize_unicode=config.matching.normalize_unicode,
             case_sensitive=config.matching.case_sensitive,
             retry=retry,
+            max_table_rows=config.output.max_table_rows,
         ),
     )
 

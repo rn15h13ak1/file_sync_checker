@@ -170,6 +170,81 @@ performance:
         with pytest.raises(ConfigError, match="mtime_tolerance_sec"):
             load_config(cfg)
 
+    def test_max_table_rows_defaults_when_absent(self, tmp_path: Path):
+        """既に配布済みの config.yaml (項目なし) でも既定値で動く。"""
+        cfg = _write(tmp_path / "c.yaml", """
+locations:
+  - name: A
+    path: /opt/a
+  - name: B
+    path: /opt/b
+""")
+        assert load_config(cfg).output.max_table_rows == 20_000
+
+    def test_max_table_rows_explicit(self, tmp_path: Path):
+        cfg = _write(tmp_path / "c.yaml", """
+locations:
+  - name: A
+    path: /opt/a
+  - name: B
+    path: /opt/b
+output:
+  max_table_rows: 5000
+""")
+        assert load_config(cfg).output.max_table_rows == 5000
+
+    def test_max_table_rows_zero_means_unlimited(self, tmp_path: Path):
+        cfg = _write(tmp_path / "c.yaml", """
+locations:
+  - name: A
+    path: /opt/a
+  - name: B
+    path: /opt/b
+output:
+  max_table_rows: 0
+""")
+        assert load_config(cfg).output.max_table_rows == 0
+
+    def test_negative_max_table_rows_rejected(self, tmp_path: Path):
+        cfg = _write(tmp_path / "c.yaml", """
+locations:
+  - name: A
+    path: /opt/a
+  - name: B
+    path: /opt/b
+output:
+  max_table_rows: -1
+""")
+        with pytest.raises(ConfigError, match="max_table_rows"):
+            load_config(cfg)
+
+    def test_non_integer_max_table_rows_rejected(self, tmp_path: Path):
+        cfg = _write(tmp_path / "c.yaml", """
+locations:
+  - name: A
+    path: /opt/a
+  - name: B
+    path: /opt/b
+output:
+  max_table_rows: "たくさん"
+""")
+        with pytest.raises(ConfigError, match="max_table_rows"):
+            load_config(cfg)
+
+    def test_cli_overrides_keep_max_table_rows(self, tmp_path: Path):
+        """--format や -o で上書きしても表示上限は維持される。"""
+        cfg = _write(tmp_path / "c.yaml", """
+locations:
+  - name: A
+    path: /opt/a
+  - name: B
+    path: /opt/b
+output:
+  max_table_rows: 1234
+""")
+        config = apply_overrides(load_config(cfg), output_format="html")
+        assert config.output.max_table_rows == 1234
+
     def test_matching_defaults(self, tmp_path: Path):
         """既定で Unicode 正規化あり・大小文字は区別する。"""
         cfg = _write(tmp_path / "c.yaml", """

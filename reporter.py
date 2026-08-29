@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional, Set
 
 from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
@@ -182,6 +182,9 @@ class ReportSettings:
     normalize_unicode: bool
     case_sensitive: bool
     retry: int = 0
+    # HTML の 1 表あたりの最大行数。0 は無制限。Excel には適用しない
+    # (全件を確認する手段として Excel を残すため)。
+    max_table_rows: int = 0
 
 
 @dataclass
@@ -552,6 +555,11 @@ def _iter_html_document(ctx: ReportContext) -> Iterator[str]:
 </header>
 <main>
   """
+    limit = ctx.settings.max_table_rows if ctx.settings else 0
+    # 実際に表へ描画した相対パス。詳細データ (JSON) はこの分だけ出せばよい。
+    # JSON は表より後に書き出すので、流しながら集めれば追加のパスは要らない。
+    rendered: Set[str] = set()
+
     yield _html_summary_section(ctx, elapsed)
     for section_title, rows in (
         ("全ファイル一覧", ctx.comparison.all_files),
@@ -560,7 +568,9 @@ def _iter_html_document(ctx: ReportContext) -> Iterator[str]:
         ("余分なファイル", ctx.comparison.extra_files),
         ("エラー対象ファイル", ctx.comparison.errored_files),
     ):
-        yield from _iter_html_file_table(section_title, rows, loc_names)
+        yield from _iter_html_file_table(
+            section_title, rows, loc_names, limit=limit, rendered=rendered
+        )
     yield _html_dir_diff(ctx.comparison.dir_diffs, loc_names)
     yield _html_errors(ctx.scans)
     yield """
@@ -577,7 +587,7 @@ def _iter_html_document(ctx: ReportContext) -> Iterator[str]:
 </dialog>
 <script type="application/json" id="report-data">
 """
-    yield from _iter_report_data_json(ctx)
+    yield from _iter_report_data_json(ctx, only=rendered)
     yield f"""
 </script>
 <script>
@@ -648,6 +658,9 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .fixed-col-table tbody tr:nth-child(odd) td:nth-child(3) { background: #fff; }
 .fixed-col-table tbody tr:nth-child(even) td:nth-child(3) { background: #f6f8fb; }
 .empty { color: #888; font-style: italic; padding: 8px; }
+.truncated { margin: 8px 0 0; padding: 8px 10px; font-size: 0.85rem;
+             background: #fff4e5; border-left: 4px solid #f0a020; color: #7a4b00; }
+.truncated code { background: #ffe9c7; padding: 1px 4px; border-radius: 3px; }
 
 /* ===== 絞り込みツールバー ===== */
 .table-tools {
@@ -1122,7 +1135,9 @@ def _json_chunk(value) -> str:
     )
 
 
-def _iter_report_data_json(ctx: ReportContext) -> Iterator[str]:
+def _iter_report_data_json(
+    ctx: ReportContext, only: Optional[Set[str]] = None
+) -> Iterator[str]:
     """詳細表示用データを JSON として少しずつ書き出す。
 
     全行分を 1 つの dict に組み立ててから dumps すると、行数に比例して
@@ -1132,10 +1147,14 @@ def _iter_report_data_json(ctx: ReportContext) -> Iterator[str]:
     yield f'"locations":{_json_chunk(_report_locations(ctx))},'
     yield f'"statusClasses":{_json_chunk(_STATUS_CLASSES)},'
     yield '"rows":{'
-    for i, (key, data) in enumerate(_iter_report_rows(ctx)):
-        if i:
+    written = 0
+    for key, data in _iter_report_rows(ctx):
+        if only is not None and key not in only:
+            continue  # 表に出ていない行の詳細は誰も引かない
+        if written:
             yield ","
         yield f"{_json_chunk(key)}:{_json_chunk(data)}"
+        written += 1
     yield "}}"
 
 
@@ -1210,8 +1229,17 @@ def _iter_html_file_table(
     title: str,
     rows: List[FileRow],
     loc_names: List[str],
+    *,
+    limit: int = 0,
+    rendered: Optional[Set[str]] = None,
 ) -> Iterator[str]:
-    """ファイル一覧セクションを行単位で少しずつ生成する。"""
+    """ファイル一覧セクションを行単位で少しずつ生成する。
+
+    `limit` を超える行は描画せず、末尾に省略件数を注記する。行数がブラウザの
+    処理能力を超えるとレポート自体が開けなくなるため (実測: 50,000 行で
+    30 秒以上無応答)、全件は Excel 側で確認してもらう。
+    `rendered` を渡すと、実際に描画した相対パスを追加する。
+    """
     sid = _section_id(title)
     if not rows:
         yield f"""
@@ -1228,8 +1256,11 @@ def _iter_html_file_table(
 
     head_html = "".join(f"<th>{html.escape(h)}</th>" for h in headers)
 
+    shown = rows[:limit] if limit and len(rows) > limit else rows
+    omitted = len(rows) - len(shown)
+
     # 状態が 1 種類しかないセクション (各差分セクション) では状態フィルタは意味がない
-    statuses = sorted({r.status for r in rows})
+    statuses = sorted({r.status for r in shown})
     if len(statuses) > 1:
         options = "".join(
             f'<option value="{html.escape(s, quote=True)}">{html.escape(s)}</option>'
@@ -1255,9 +1286,11 @@ def _iter_html_file_table(
     <thead><tr>{head_html}</tr></thead>
     <tbody>"""
 
-    for i, row in enumerate(rows, 1):
+    for i, row in enumerate(shown, 1):
         # 表と詳細データで同じ文字列になるよう、どちらも _sanitize を通す
         relpath = _sanitize(row.relpath)
+        if rendered is not None:
+            rendered.add(relpath)
         name = relpath.rsplit("/", 1)[-1]
         ext = Path(name).suffix
         status_cls = _status_class(row.status)
@@ -1314,8 +1347,15 @@ def _iter_html_file_table(
 
     yield """</tbody>
   </table></div>
-</section>
 """
+    if omitted:
+        yield (
+            f'  <p class="truncated">残り {omitted:,} 件は表示件数の上限 '
+            f'({limit:,} 行) により省略しました。'
+            f'全件は Excel レポート、または設定の '
+            f'<code>output.max_table_rows</code> で確認してください。</p>\n'
+        )
+    yield "</section>\n"
 
 
 def _html_dir_diff(dir_diffs, loc_names: List[str]) -> str:
