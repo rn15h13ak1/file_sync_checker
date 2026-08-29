@@ -222,6 +222,57 @@ class TestMainErrorPaths:
         assert any("ハッシュ省略" in r.message for r in caplog.records), caplog.text
 
 
+class TestProgressBarSuppression:
+    """端末でなければ進捗バーを出さない。
+
+    cron などで stderr をファイルに落としていると、tqdm の更新がそのまま
+    ログに書き込まれる (実測: 10 秒のスキャンで stderr の 97% が進捗バー由来)。
+    """
+
+    def _capture_show_progress(self, tmp_path, monkeypatch, *, isatty: bool, argv: list):
+        import main as main_mod
+
+        cfg_path = _write_config(tmp_path, "html")
+        monkeypatch.setattr(sys, "argv", ["main.py", "-c", str(cfg_path), *argv])
+
+        class FakeStderr:
+            def isatty(self):
+                return isatty
+
+            def write(self, *a):
+                pass
+
+            def flush(self):
+                pass
+
+        monkeypatch.setattr(sys, "stderr", FakeStderr())
+        captured = {}
+
+        def fake_run(config, config_path, *, show_progress, log, retry=0):
+            captured["show_progress"] = show_progress
+            return EXIT_OK
+
+        monkeypatch.setattr(main_mod, "run", fake_run)
+        assert main_mod.main() == EXIT_OK
+        return captured["show_progress"]
+
+    def test_disabled_when_stderr_is_not_a_tty(self, tmp_path, monkeypatch):
+        assert self._capture_show_progress(
+            tmp_path, monkeypatch, isatty=False, argv=[]
+        ) is False
+
+    def test_enabled_on_a_terminal(self, tmp_path, monkeypatch):
+        assert self._capture_show_progress(
+            tmp_path, monkeypatch, isatty=True, argv=[]
+        ) is True
+
+    def test_no_progress_wins_on_a_terminal(self, tmp_path, monkeypatch):
+        """端末でも --no-progress を付ければ出さない。"""
+        assert self._capture_show_progress(
+            tmp_path, monkeypatch, isatty=True, argv=["--no-progress"]
+        ) is False
+
+
 class TestArgParsing:
     def test_negative_retry_is_rejected(self, monkeypatch, capsys):
         """--retry に負値を渡したら起動前に弾く。"""

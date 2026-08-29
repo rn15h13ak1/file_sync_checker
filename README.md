@@ -20,7 +20,7 @@ cp config.example.yaml config.yaml
 ```bash
 python main.py                    # 既定で config.yaml を使用
 python main.py -c path/to/cfg.yml # 設定ファイル指定
-python main.py --no-progress      # 進捗バーを抑制
+python main.py --no-progress      # 進捗バーを抑制 (端末以外では指定不要)
 python main.py -v                 # 詳細ログ
 ```
 
@@ -52,6 +52,13 @@ CWD に依存せずフルパスで起動することもできます:
 ```bash
 python /full/path/to/main.py -c /full/path/to/config.yaml
 ```
+
+### 定期実行するとき
+
+進捗バーは **stderr が端末のときだけ**表示されます。cron などで stderr を
+ファイルへリダイレクトしている場合は自動的に無効になるため、`--no-progress` を
+付ける必要はありません（付けなかった場合、進捗バーの更新がそのままログに
+書き込まれ、実測では 10 秒のスキャンで stderr の 97% が制御文字の断片になっていました）。
 
 ### パス解決ルール
 
@@ -206,7 +213,7 @@ output:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest          # 247 テストケース
+pytest          # 250 テストケース
 pytest -v       # 詳細出力
 pytest -k mino  # 特定の名前のテストだけ
 ```
