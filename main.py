@@ -16,7 +16,7 @@ from config import (
     load_config,
 )
 from comparator import compare
-from reporter import ReportContext, write_excel, write_html
+from reporter import ReportContext, ReportSettings, write_excel, write_html
 from scanner import HASH_MODES, ScanCancelled, scan_locations
 from utils import ensure_dir, human_bytes, setup_logging, timestamp_slug
 
@@ -132,6 +132,16 @@ def run(config: Config, config_path: Path, *, show_progress: bool, log) -> int:
         config_path=config_path,
         scans=scans,
         comparison=comparison,
+        # 設定ファイルのパスだけでは、そのレポートがどの保証を意味するのか
+        # 読み手に分からない。実際に使われた条件をレポートに残す。
+        settings=ReportSettings(
+            hash_mode=config.performance.hash_mode,
+            hash_algorithm=config.performance.hash_algorithm,
+            mtime_tolerance_sec=config.performance.mtime_tolerance_sec,
+            exclude_patterns=config.exclude_patterns,
+            normalize_unicode=config.matching.normalize_unicode,
+            case_sensitive=config.matching.case_sensitive,
+        ),
     )
 
     written = []

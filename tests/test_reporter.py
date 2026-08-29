@@ -28,6 +28,7 @@ from reporter import (
     MISSING_PLACEHOLDER,
     SKIPPED_HASH_PLACEHOLDER,
     ReportContext,
+    ReportSettings,
     _build_paths,
     _looks_windows,
     write_excel,
@@ -780,6 +781,77 @@ class TestHtml:
         rows_a = list(load_workbook(xa)["全ファイル一覧"].iter_rows(values_only=True))
         rows_b = list(load_workbook(xb)["全ファイル一覧"].iter_rows(values_only=True))
         assert rows_a == rows_b
+
+    def test_run_conditions_are_recorded(self, tmp_path: Path):
+        """レポート単体で「どういう条件で照合したか」が追える。
+
+        設定ファイルのパスだけでは、そのレポートがどの保証を意味するのか
+        読み手に分からない。特に smart は更新日時に基づく推定を含み、
+        除外パターンは「検査していないファイルがある」ことすら見えない。
+        """
+        a = make_scan("拠点A", files={"x.txt": make_entry(None)})
+        a.skipped_hashes = 3
+        b = make_scan("拠点B", files={"x.txt": make_entry(None)})
+        b.skipped_hashes = 3
+        ctx = ReportContext(
+            started_at=datetime(2026, 1, 1),
+            finished_at=datetime(2026, 1, 1),
+            config_path=tmp_path / "c.yaml",
+            scans=[a, b],
+            comparison=compare([a, b]),
+            settings=ReportSettings(
+                hash_mode="smart",
+                hash_algorithm="sha256",
+                mtime_tolerance_sec=2.0,
+                exclude_patterns=["~$*", "機密*"],
+                normalize_unicode=True,
+                case_sensitive=False,
+            ),
+        )
+        body = write_html(ctx, tmp_path / "out.html").read_text(encoding="utf-8")
+        conditions = body.split("<h3>実行条件</h3>")[1].split("</table>")[0]
+        assert "smart" in conditions
+        assert "sha256" in conditions
+        assert "6 件" in conditions              # 拠点をまたいだハッシュ省略の合計
+        assert "2 秒" in conditions              # smart のときだけ出る許容誤差
+        assert "機密*" in conditions             # 検査対象外のファイルがあると分かる
+        assert "大文字小文字を区別しない" in conditions
+
+        from openpyxl import load_workbook
+        ws = load_workbook(write_excel(ctx, tmp_path / "out.xlsx"))["サマリー"]
+        cells = {r[0]: r[1] for r in ws.iter_rows(values_only=True) if r and r[0]}
+        assert "smart" in str(cells["ハッシュ方式"])
+        assert cells["ハッシュ省略件数"] == "6 件"
+        assert cells["除外パターン"] == "~$*, 機密*"
+
+    def test_always_mode_omits_mtime_tolerance(self, tmp_path: Path):
+        """always では更新日時を使わないので許容誤差は出さない。"""
+        a = make_scan("A", files={"x.txt": make_entry("h")})
+        b = make_scan("B", files={"x.txt": make_entry("h")})
+        ctx = ReportContext(
+            started_at=datetime(2026, 1, 1),
+            finished_at=datetime(2026, 1, 1),
+            config_path=tmp_path / "c.yaml",
+            scans=[a, b],
+            comparison=compare([a, b]),
+            settings=ReportSettings(
+                hash_mode="always", hash_algorithm="sha256", mtime_tolerance_sec=2.0,
+                exclude_patterns=[], normalize_unicode=True, case_sensitive=True,
+            ),
+        )
+        conditions = write_html(ctx, tmp_path / "out.html").read_text(
+            encoding="utf-8"
+        ).split("<h3>実行条件</h3>")[1].split("</table>")[0]
+        assert "always" in conditions
+        assert "更新日時の許容誤差" not in conditions
+        assert "なし" in conditions  # 除外パターン無し
+
+    def test_summary_without_settings_omits_conditions(
+        self, rich_ctx: ReportContext, tmp_path: Path
+    ):
+        """settings 未指定なら実行条件のセクションは出ない (既存の呼び出しを壊さない)。"""
+        body = write_html(rich_ctx, tmp_path / "out.html").read_text(encoding="utf-8")
+        assert "<h3>実行条件</h3>" not in body
 
     def test_summary_paths_are_not_truncated_and_copyable(self, tmp_path: Path):
         """サマリーのパスは省略せず全体を出し、コピーできる。

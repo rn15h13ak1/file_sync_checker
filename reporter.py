@@ -69,6 +69,39 @@ def _xl(value):
     return _sanitize(value) if isinstance(value, str) else value
 
 
+def _condition_rows(ctx: "ReportContext") -> List[tuple]:
+    """サマリーに出す実行条件の (項目, 値) を返す。設定が無ければ空。"""
+    s = ctx.settings
+    if s is None:
+        return []
+
+    if s.hash_mode == "smart":
+        mode = (
+            "smart — サイズが違うファイルと、"
+            "全拠点でサイズ・更新日時が一致するファイルは読み取りを省略"
+        )
+    else:
+        mode = "always — 全ファイルの内容を読んで照合"
+
+    rows = [
+        ("ハッシュ方式", f"{s.hash_algorithm} / {mode}"),
+        ("ハッシュ省略件数", f"{sum(sc.skipped_hashes for sc in ctx.scans):,} 件"),
+    ]
+    if s.hash_mode == "smart":
+        rows.append(("更新日時の許容誤差", f"{s.mtime_tolerance_sec:g} 秒"))
+    rows.append((
+        "除外パターン",
+        ", ".join(s.exclude_patterns) if s.exclude_patterns else "なし",
+    ))
+    rows.append((
+        "ファイル名の照合",
+        ("NFC 正規化あり" if s.normalize_unicode else "正規化なし")
+        + " / "
+        + ("大文字小文字を区別する" if s.case_sensitive else "大文字小文字を区別しない"),
+    ))
+    return rows
+
+
 def _minority_targets(row: FileRow) -> tuple[set, set]:
     """不一致行で強調表示すべき (ハッシュ集合, サイズ集合) を返す。
 
@@ -131,12 +164,32 @@ FONT_HEADER = Font(bold=True, color="FFFFFF")
 
 
 @dataclass
+class ReportSettings:
+    """レポートに記録する「どういう条件で照合したか」。
+
+    設定ファイルのパスだけでは、そのレポートがどの程度の保証を意味するのか
+    読み手に分からない。特に `hash_mode: smart` は更新日時に基づく推定を含み、
+    除外パターンに至っては「検査していないファイルがある」ことすら見えない。
+    レポート単体で条件が追えるよう、実際に使われた値を持たせる。
+    """
+
+    hash_mode: str
+    hash_algorithm: str
+    mtime_tolerance_sec: float
+    exclude_patterns: List[str]
+    normalize_unicode: bool
+    case_sensitive: bool
+
+
+@dataclass
 class ReportContext:
     started_at: datetime
     finished_at: datetime
     config_path: Path
     scans: List[ScanResult]
     comparison: ComparisonResult
+    # 省略時は実行条件のセクションを出さない (呼び出し側が未対応の場合)
+    settings: Optional[ReportSettings] = None
 
 
 # ============================================================
@@ -226,6 +279,12 @@ def _excel_summary(wb: WB, ctx: ReportContext) -> None:
             len(s.errors),
         ])
 
+    conditions = _condition_rows(ctx)
+    if conditions:
+        rows.append([])
+        rows.append(["実行条件", "値"])
+        rows.extend([k, v] for k, v in conditions)
+
     rows.append([])
     rows.append(["差分種別", "件数"])
     rows.append(["ハッシュ不一致", len(ctx.comparison.hash_mismatches)])
@@ -238,7 +297,8 @@ def _excel_summary(wb: WB, ctx: ReportContext) -> None:
     for r_idx, row in enumerate(rows, 1):
         # 見出し行 (1行目と各表の先頭行) だけ太字にする
         is_header = r_idx == 1 or (
-            row and isinstance(row[0], str) and row[0] in {"拠点", "差分種別", "項目"}
+            row and isinstance(row[0], str)
+            and row[0] in {"拠点", "差分種別", "項目", "実行条件"}
         )
         ws.append([
             _cell(ws, val, font=bold) if is_header else _xl(val) for val in row
@@ -1019,10 +1079,24 @@ def _html_summary_section(ctx: ReportContext, elapsed: float) -> str:
         f"<tr><td>{html.escape(k)}</td><td class='num'>{v:,}</td></tr>" for k, v in diff_rows
     )
 
+    conditions = _condition_rows(ctx)
+    conditions_html = ""
+    if conditions:
+        body = "".join(
+            f"<tr><td>{html.escape(k)}</td>"
+            f"<td class='wrap-path'>{html.escape(v)}</td></tr>"
+            for k, v in conditions
+        )
+        conditions_html = f"""
+  <h3>実行条件</h3>
+  <table class="summary-table">{body}</table>
+"""
+
     return f"""
 <section id="summary">
   <h2>サマリー</h2>
   <table class="summary-table">{summary_kv}</table>
+{conditions_html}
   <h3>拠点別</h3>
   <div class="scroll-wrap"><table>
     <thead><tr><th>拠点</th><th>ルートパス</th><th>ファイル数</th><th>総サイズ</th><th>エラー数</th></tr></thead>
