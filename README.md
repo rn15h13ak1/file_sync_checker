@@ -312,11 +312,24 @@ python3 main.py --list-comparisons    # 定義されている名前を一覧表�
 - 比較が 2 つ以上あるとき、`--comparison` を省略するとエラーになります
   （どれを実行するか決められないため。定義が 1 つだけなら省略できます）
 
-**従来形式について**
+**従来形式 (`locations:`) は引き続きサポートします**
 
-`comparisons:` を使わず、トップレベルに `locations:` を書く形式も引き続き動きます。
-既に配布した設定ファイルをそのまま使えるようにするためで、書き換えは不要です。
-`comparisons` と同時には指定できません。
+トップレベルに `locations:` を書く形式は、これからも動きます。
+既に配布した `config.yaml` をそのまま使い続けられるようにするためで、
+**新しい版へ入れ替えても書き換えは不要**です。
+
+動作は以前と変わりません。
+
+| 項目 | 従来形式での動作 |
+| --- | --- |
+| 実行 | `python3 main.py`（`--comparison` は不要・指定するとエラー） |
+| レポート名 | `sync-check-YYYYMMDD-HHMMSS.{html,xlsx}`（比較名は入らない） |
+| 固定名リンク | `sync-check.html`（変わらない） |
+| レポートの実行条件 | 「比較」の行は出ない |
+| メニュー | 「比較対象を変更」は表示しない |
+
+これは `tests/test_backward_compat.py` で、実際に `main.py` を起動して固定しています。
+`comparisons` と同時には指定できません（どちらを使うか曖昧になるため）。
 
 ```yaml
 # 従来形式（引き続き動作します）
@@ -366,7 +379,8 @@ python3 /opt/file_sync_checker/main.py -c /opt/file_sync_checker/config.yaml --r
 
 - `comparisons`: 比較する組（名前 → 拠点の一覧）。組が 1 つでも複数でも同じ書き方
   → [複数の比較を定義する](#5-複数の比較を定義する)
-- `locations`: 従来形式の拠点一覧（2件以上）。`comparisons` と同時には使えません
+- `locations`: 従来形式の拠点一覧（2件以上）。**引き続きサポートします**。
+  `comparisons` と同時には使えません
 - `exclude_patterns`: glob 除外。`/` を含まなければファイル名・ディレクトリ名、含めば相対パス全体と照合
 - `matching.normalize_unicode`: ファイル名を NFC 正規化して突き合わせる（既定 `true`）
 - `matching.case_sensitive`: ファイル名の大文字小文字を区別する（既定 `true`）
@@ -558,7 +572,7 @@ file_sync_checker/
     ├── test_comparator.py    差分の分類
     ├── test_reporter.py      レポートの内容・サイズ・メモリ
     ├── test_utils.py         表示整形・ロギング
-    └── test_windows.py       Windows 対応（文字コード・改行・UNC パス）
+    ├── test_windows.py       Windows 対応（文字コード・改行・UNC パス）
 ```
 
 ---
@@ -567,7 +581,7 @@ file_sync_checker/
 
 ```bash
 pip install -r requirements-dev.txt
-pytest          # 388 テストケース
+pytest          # 397 テストケース
 pytest -v       # 詳細出力
 pytest -k mino  # 特定の名前のテストだけ
 ```
@@ -610,6 +624,7 @@ CLI テスト (`tests/test_cli.py`) は別プロセスで `main.py` を起動す
 - `reporter`: 行あたり出力サイズと生成時ピークメモリの上限（肥大・メモリ回帰の防止）
 - `reporter`: Windows ルート（UNC・ドライブレター）でのパス組み立て、出力の決定性
 - `cli`: 実プロセスでの終了コード、各上書きオプション、不正な引数の拒否
+- `backward_compat`: 従来形式 (`locations:`) の実行・レポート名・メニュー表示が変わらないこと
 - `main`: 設定エラー・中断・予期しない例外の終了コード、既定 config の探索順
 - `utils`: 単位境界 (B/KB/MB/GB/TB/PB)、ロガーの二重初期化防止
 
