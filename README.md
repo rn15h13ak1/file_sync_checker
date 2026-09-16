@@ -9,7 +9,7 @@ Excel と HTML のレポートにまとめます。**検出のみで、修正は
 ## 主要機能
 
 - **N 拠点の同時比較**: 2 拠点以上に対応。「欠落」と「一部のみ存在」を過半数基準で区別する
-- **複数の比較を 1 ファイルに定義**: 契約書・設計…と対象を分けて定義し、実行時に選ぶ
+- **複数の比較を 1 ファイルに定義**: 契約書・設計…と名前を付けて並べ、実行時に選ぶ。組が 1 つでも書き方は同じ
 - **読み取り量の削減**: サイズ・更新日時から結論が出るファイルを読み飛ばせる（`hash_mode: smart`）
 - **日本語ファイル名に対応**: macOS (NFD) と Windows (NFC) の表記揺れを同一ファイルとして扱う
 - **原因を追えるレポート**: 行をクリックすると拠点ごとのフルパスとハッシュを表示。パスはコピー可能
@@ -77,14 +77,19 @@ echo $?
 ```
 
 `config.yaml` に最低限必要なのは比較する拠点だけです。
+比較したい組に名前を付けて並べます。**組が 1 つでも複数でも書き方は同じ**です。
 
 ```yaml
-locations:
-  - name: "本社"
-    path: "//srv-hq/share/docs"
-  - name: "大阪支店"
-    path: "//srv-osaka/share/docs"
+comparisons:
+  契約書:
+    - name: "本社"
+      path: "//srv-hq/share/契約書"
+    - name: "大阪支店"
+      path: "//srv-osaka/share/契約書"
 ```
+
+組を増やしたくなったら、同じ形で足すだけです
+→ [複数の比較を定義する](#5-複数の比較を定義する)
 
 ---
 
@@ -240,22 +245,29 @@ HTML 出力時は併せて `<output_dir>/sync-check.html`（タイムスタン�
 
 ### 5. 複数の比較を定義する
 
-対象のフォルダが複数ある場合、`comparisons:` に名前を付けて並べられます。
-設定ファイルを分けたり、実行のたびに `locations:` を書き換えたりする必要はありません。
+比較する組は `comparisons:` に名前を付けて並べます。**組の数によって書き方は変わりません。**
+1 つのときの書き方のまま、行を足せば 2 つ目以降になります。
 
 ```yaml
 comparisons:
   契約書:
     - {name: "本社",     path: "//srv-hq/share/契約書"}
     - {name: "大阪支店", path: "//srv-osaka/share/契約書"}
-  設計:
+
+  設計:                                    # 足すだけ
     - {name: "本社",       path: "//srv-hq/share/設計"}
     - {name: "大阪支店",   path: "//srv-osaka/share/設計"}
     - {name: "名古屋支店", path: "//srv-nagoya/share/設計"}
 ```
 
+変わるのは実行時だけです。
+
+| 定義した組 | 実行 |
+| --- | --- |
+| 1 つ | `python3 main.py`（比較名の指定は不要） |
+| 2 つ以上 | `python3 main.py --comparison 契約書`（どれを実行するか選ぶ） |
+
 ```bash
-python3 main.py --comparison 契約書   # 名前を指定して実行
 python3 main.py --list-comparisons    # 定義されている名前を一覧表示
 ```
 
@@ -300,8 +312,23 @@ python3 main.py --list-comparisons    # 定義されている名前を一覧表�
 - 比較が 2 つ以上あるとき、`--comparison` を省略するとエラーになります
   （どれを実行するか決められないため。定義が 1 つだけなら省略できます）
 
-従来どおり `locations:` をトップレベルに書く形式もそのまま動きます。
-その場合レポートのファイル名は `sync-check-YYYYMMDD-HHMMSS.html` のままです。
+**従来形式について**
+
+`comparisons:` を使わず、トップレベルに `locations:` を書く形式も引き続き動きます。
+既に配布した設定ファイルをそのまま使えるようにするためで、書き換えは不要です。
+`comparisons` と同時には指定できません。
+
+```yaml
+# 従来形式（引き続き動作します）
+locations:
+  - {name: "本社",     path: "//srv-hq/share/docs"}
+  - {name: "大阪支店", path: "//srv-osaka/share/docs"}
+```
+
+新しく書く場合や、比較を増やしたくなった場合は `comparisons:` に移してください。
+移行するとレポートのファイル名に比較名が入ります
+（`sync-check-YYYYMMDD-HHMMSS.html` → `sync-check-契約書-YYYYMMDD-HHMMSS.html`）。
+固定名のリンクを参照している場合は `sync-check.html` → `sync-check-契約書.html` に変わります。
 
 ### 6. 定期実行する
 
@@ -337,8 +364,9 @@ python3 /opt/file_sync_checker/main.py -c /opt/file_sync_checker/config.yaml --r
 
 `config.example.yaml` を参照。主な項目：
 
-- `locations`: 比較対象の拠点（2件以上）。`comparisons` と同時には使えません
-- `comparisons`: 名前を付けた比較の一覧 → [複数の比較を定義する](#5-複数の比較を定義する)
+- `comparisons`: 比較する組（名前 → 拠点の一覧）。組が 1 つでも複数でも同じ書き方
+  → [複数の比較を定義する](#5-複数の比較を定義する)
+- `locations`: 従来形式の拠点一覧（2件以上）。`comparisons` と同時には使えません
 - `exclude_patterns`: glob 除外。`/` を含まなければファイル名・ディレクトリ名、含めば相対パス全体と照合
 - `matching.normalize_unicode`: ファイル名を NFC 正規化して突き合わせる（既定 `true`）
 - `matching.case_sensitive`: ファイル名の大文字小文字を区別する（既定 `true`）
@@ -539,7 +567,7 @@ file_sync_checker/
 
 ```bash
 pip install -r requirements-dev.txt
-pytest          # 385 テストケース
+pytest          # 388 テストケース
 pytest -v       # 詳細出力
 pytest -k mino  # 特定の名前のテストだけ
 ```

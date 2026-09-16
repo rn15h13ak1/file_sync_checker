@@ -193,7 +193,7 @@ def choose_comparison(config_path: str, current: str) -> str | None:
     """比較対象を選ぶ。戻る場合は None。"""
     names = list_comparisons(config_path)
     if not names:
-        print("  ※ この設定には比較が 1 組しかありません (comparisons 未使用)。")
+        print("  ※ この設定には比較が 1 組しかありません。切り替える対象がありません。")
         return None
     default = names.index(current) + 1 if current in names else 1
     choice = print_menu("比較対象を選択", comparison_items(config_path, names),

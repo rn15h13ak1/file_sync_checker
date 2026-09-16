@@ -628,3 +628,62 @@ class TestComparisonReports:
         out = capsys.readouterr().out
         assert "契約書" in out and "設計" in out
         assert not (tmp_path / "reports").exists()
+
+
+class TestSingleComparisonSameShape:
+    """比較が 1 組でも、複数と同じ `comparisons:` の書き方で動くこと。
+
+    組の数で設定の書き方が変わらないことを固定する。
+    """
+
+    def _write(self, tmp_path: Path, names: list) -> Path:
+        comparisons = {}
+        for i, name in enumerate(names):
+            a, b = tmp_path / f"{name}A", tmp_path / f"{name}B"
+            for d in (a, b):
+                d.mkdir()
+                (d / "shared.txt").write_text("data", encoding="utf-8")
+            comparisons[name] = [{"name": "本社", "path": str(a)},
+                                 {"name": "大阪", "path": str(b)}]
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(yaml.safe_dump({
+            "comparisons": comparisons,
+            "output": {"format": "html", "output_dir": str(tmp_path / "reports")},
+        }, allow_unicode=True), encoding="utf-8")
+        return cfg
+
+    def test_single_entry_needs_no_comparison_argument(self, tmp_path, monkeypatch, capsys):
+        """1 組だけなら --comparison を付けずに実行できる。"""
+        import main as main_mod
+
+        cfg = self._write(tmp_path, ["契約書"])
+        monkeypatch.setattr(sys, "argv", ["main.py", "-c", str(cfg), "--no-progress"])
+        assert main_mod.main() == EXIT_OK
+        capsys.readouterr()
+        assert (tmp_path / "reports" / "sync-check-契約書.html").is_file()
+
+    def test_adding_a_second_entry_only_changes_the_invocation(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """2 組目を足しても設定の書き方は同じ。変わるのは実行時の指定だけ。"""
+        import main as main_mod
+
+        cfg = self._write(tmp_path, ["契約書", "設計"])
+        # 名前を指定すれば動く
+        monkeypatch.setattr(sys, "argv",
+                            ["main.py", "-c", str(cfg), "--no-progress",
+                             "--comparison", "契約書"])
+        assert main_mod.main() == EXIT_OK
+        capsys.readouterr()
+        # 省略すると、どれを実行するか決められないので設定エラー
+        monkeypatch.setattr(sys, "argv", ["main.py", "-c", str(cfg), "--no-progress"])
+        assert main_mod.main() == EXIT_CONFIG_ERROR
+        capsys.readouterr()
+
+    def test_single_entry_reports_carry_the_name(self, tmp_path, capsys):
+        """1 組でもレポート名に比較名が入る (複数と同じ扱い)。"""
+        cfg = self._write(tmp_path, ["契約書"])
+        run(load_config(cfg), cfg, show_progress=False, log=_silent_logger())
+        capsys.readouterr()
+        names = [p.name for p in (tmp_path / "reports").iterdir()]
+        assert all("契約書" in n for n in names), names

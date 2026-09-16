@@ -1,30 +1,40 @@
 # File Sync Checker - 設定ファイルサンプル
 # 実環境用は config.yaml にコピーして書き換えてください。
 
-# 比較する拠点。書き方は 2 通りあります。
+# 比較する拠点。
+# 比較したい組ごとに名前を付けて並べます。組が 1 つでも複数でも書き方は同じです。
 #
-# (A) 1 組だけ比較する場合: locations に拠点を並べる
-locations:
-  - name: "拠点A"
-    path: "//server-a/share/docs"
-  - name: "拠点B"
-    path: "//server-b/share/docs"
-  - name: "拠点C"
-    path: "//server-c/share/docs"
+#   - 組が 1 つだけなら、実行時に比較名の指定は要りません
+#   - 組が 2 つ以上なら、実行時に --comparison で選びます
+#     (メニューからは「チェックを実行」を選ぶと一覧から選べます)
+#
+# 比較名はレポートのファイル名に入ります (sync-check-契約書-YYYYMMDD-HHMMSS.html)。
+# そのため \ / : * ? " < > | は使えません。
+comparisons:
+  契約書:
+    - name: "本社"
+      path: "//srv-hq/share/契約書"
+    - name: "大阪支店"
+      path: "//srv-osaka/share/契約書"
 
-# (B) 複数の比較を定義する場合: comparisons に「名前: 拠点の一覧」を並べる
-#     locations と comparisons は同時に使えません。
-#     実行時に --comparison で名前を指定します (メニューからも選べます)。
-#     レポートのファイル名に名前が入るため、比較ごとに結果が残ります。
+  # 2 組目以降は同じ形で足すだけです
+  # 設計:
+  #   - name: "本社"
+  #     path: "//srv-hq/share/設計"
+  #   - name: "大阪支店"
+  #     path: "//srv-osaka/share/設計"
+  #   - name: "名古屋支店"
+  #     path: "//srv-nagoya/share/設計"
+
+# 【従来形式】トップレベルに locations を書く形も引き続き動きます
+# (既存の設定ファイルをそのまま使えるようにするため)。
+# comparisons と同時には指定できません。新しく書く場合は comparisons を使ってください。
 #
-# comparisons:
-#   契約書:
-#     - {name: "本社",     path: "//srv-hq/share/契約書"}
-#     - {name: "大阪支店", path: "//srv-osaka/share/契約書"}
-#   設計:
-#     - {name: "本社",       path: "//srv-hq/share/設計"}
-#     - {name: "大阪支店",   path: "//srv-osaka/share/設計"}
-#     - {name: "名古屋支店", path: "//srv-nagoya/share/設計"}
+# locations:
+#   - name: "拠点A"
+#     path: "//server-a/share/docs"
+#   - name: "拠点B"
+#     path: "//server-b/share/docs"
 
 # 除外パターン (glob)。
 #   "/" を含まないパターン … ファイル名・ディレクトリ名と照合 (深さを問わない)
