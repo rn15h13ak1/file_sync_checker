@@ -1,0 +1,2 @@
+# Windows の cmd.exe は CRLF でないと誤動作するため、正規化を止める
+*.bat text eol=crlf

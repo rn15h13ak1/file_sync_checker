@@ -13,7 +13,7 @@ STATUS_OK = "OK"
 STATUS_HASH_MISMATCH = "ハッシュ不一致"
 STATUS_PARTIAL_MISSING = "欠落あり"
 STATUS_PARTIAL_PRESENT = "一部のみ存在"
-STATUS_ERROR = "エラー"  # 一部の拠点で読み取り失敗 — 欠落と区別する
+STATUS_ERROR = "エラー"  # 一部の拠点で読み取り失敗 ― 欠落と区別する
 
 
 @dataclass
@@ -104,7 +104,7 @@ def _classify(
         if len({e.size for e in present}) > 1:
             return STATUS_HASH_MISMATCH
         # ハッシュ計算をスキップしたファイルは全拠点 None になり、同一とみなされる
-        # (どの拠点でハッシュを取るかは相対パス単位で決まる — scanner.plan_hash_targets)。
+        # (どの拠点でハッシュを取るかは相対パス単位で決まる ― scanner.plan_hash_targets)。
         hashes = {e.hash for e in present}
         return STATUS_OK if len(hashes) == 1 else STATUS_HASH_MISMATCH
 
