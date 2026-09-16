@@ -60,6 +60,16 @@ EXIT_MEANINGS = {
     130: "中断",
 }
 
+# 終了コードの重さ。複数の比較をまとめて実行したとき、どれを代表として
+# 返すかを決めるのに使う (数字の大小ではなく、対処の必要度で並べる)。
+_SEVERITY = {0: 0, 1: 1, 3: 2, 4: 3, 130: 4}
+
+
+def worst_exit_code(codes: list) -> int:
+    """最も重い終了コードを返す。"""
+    return max(codes, key=lambda c: (_SEVERITY.get(c, 3), c), default=0)
+
+
 # メニュー自身の終了コード (tool_launcher と揃える)
 EXIT_OK = 0
 EXIT_EOF = 1
@@ -186,15 +196,41 @@ def choose_comparison(config_path: str, current: str) -> str | None:
         print("  ※ この設定には比較が 1 組しかありません (comparisons 未使用)。")
         return None
     default = names.index(current) + 1 if current in names else 1
+    choice = print_menu("比較対象を選択", comparison_items(config_path, names),
+                        default=default)
+    if choice == 0:
+        return None
+    return names[choice - 1]
+
+
+def comparison_items(config_path: str, names: list) -> list:
+    """比較名に拠点名を添えた表示用の一覧。"""
     items = []
     for name in names:
         config, _ = load_config_or_none(config_path, name)
         locs = " / ".join(loc.name for loc in config.locations) if config else "?"
         items.append(f"{name} ({locs})")
-    choice = print_menu("比較対象を選択", items, default=default)
+    return items
+
+
+def select_run_targets(config_path: str, current: str) -> list | None:
+    """実行する比較を選ぶ。戻る場合は None。
+
+    戻り値は比較名のリスト。比較が 1 組しか無い設定 (従来形式を含む) では
+    選択を挟まずそのまま実行する。複数ある場合は 1 つ選ぶか、まとめて実行できる。
+    """
+    names = list_comparisons(config_path)
+    if len(names) <= 1:
+        return [names[0] if names else ""]
+
+    items = comparison_items(config_path, names) + [f"すべて実行 ({len(names)} 件)"]
+    default = names.index(current) + 1 if current in names else 1
+    choice = print_menu("実行する比較を選択", items, default=default)
     if choice == 0:
         return None
-    return names[choice - 1]
+    if choice == len(items):
+        return list(names)
+    return [names[choice - 1]]
 
 
 def describe_targets(config_path: str, comparison: str = "") -> str:
@@ -370,7 +406,41 @@ def choose_format() -> str | None:
     return ["", "excel", "html", "both"][choice - 1]
 
 
-def run_custom(config_path: str, history: dict, comparison: str = "") -> int | None:
+def run_targets(config_path: str, targets: list, *, hash_mode: str = "",
+                output_format: str = "", retry: str = "") -> int:
+    """選ばれた比較を順に実行し、最も重い終了コードを返す。
+
+    1 つが失敗しても残りは実行する (2 件目で止まると 3 件目以降を
+    確認できないため)。中断されたときだけ打ち切る。
+    """
+    results = []
+    for i, name in enumerate(targets, 1):
+        if len(targets) > 1:
+            print()
+            hr("=")
+            print(f"  [{i}/{len(targets)}] {name}")
+            hr("=")
+        rc = run_checker(build_args(
+            config_path=config_path, comparison=name,
+            hash_mode=hash_mode, output_format=output_format, retry=retry,
+        ))
+        results.append((name, rc))
+        if rc == EXIT_INTERRUPTED:
+            print("  中断されたため、残りの比較は実行しません。")
+            break
+
+    if len(results) > 1:
+        print()
+        hr()
+        print("  実行結果")
+        hr()
+        for name, rc in results:
+            print(f"  {name:<16} {rc:>3}  {EXIT_MEANINGS.get(rc, '不明なコード')}")
+        hr("-")
+    return worst_exit_code([rc for _, rc in results])
+
+
+def run_custom(config_path: str, history: dict, targets: list) -> int | None:
     """条件を選んで実行する。戻る場合は None。"""
     hash_mode = choose_hash_mode(history)
     if hash_mode is None:
@@ -392,28 +462,28 @@ def run_custom(config_path: str, history: dict, comparison: str = "") -> int | N
     history.update({"hash_mode": hash_mode, "format": output_format, "retry": retry})
     save_history(history)
 
-    return run_checker(build_args(
-        config_path=config_path,
-        comparison=comparison,
-        hash_mode=hash_mode,
-        output_format=output_format,
-        retry=retry,
-    ))
+    return run_targets(config_path, targets, hash_mode=hash_mode,
+                       output_format=output_format, retry=retry)
 
 
 def run_mode(mode: str, label: str, config_path: str, history: dict,
-             comparison: str = "") -> int | None:
-    """1 つのモードを実行する。戻る場合は None。"""
-    print()
-    hr()
-    print(f"  {label}")
-    hr()
+             comparison: str = "", targets: list | None = None) -> int | None:
+    """1 つのモードを実行する。戻る場合は None。
+
+    実行系 (MODE_RUN / MODE_CUSTOM) は見出しを呼び出し側で出しているため、
+    ここでは出さない。
+    """
+    if mode not in (MODE_RUN, MODE_CUSTOM):
+        print()
+        hr()
+        print(f"  {label}")
+        hr()
 
     if mode == MODE_RUN:
-        return run_checker(build_args(config_path=config_path, comparison=comparison))
+        return run_targets(config_path, targets or [comparison])
 
     if mode == MODE_CUSTOM:
-        return run_custom(config_path, history, comparison)
+        return run_custom(config_path, history, targets or [comparison])
 
     if mode == MODE_SHOW:
         print_config(config_path, comparison)
@@ -512,7 +582,23 @@ def main() -> None:
                 input("\n  Enter キーでメニューに戻ります...")
                 continue
 
-            rc = run_mode(mode, label, args.config, history, comparison)
+            targets = None
+            if mode in (MODE_RUN, MODE_CUSTOM):
+                # 比較が複数あるときは、ここで実行対象を選ぶ
+                # (「比較対象を変更」を先に選ばなくても実行できるようにする)
+                print()
+                hr()
+                print(f"  {label}")
+                hr()
+                targets = select_run_targets(args.config, comparison)
+                if targets is None:
+                    continue
+                # 1 つだけ選んだ場合は、以降の既定もそれに合わせる
+                if len(targets) == 1 and targets[0]:
+                    comparison = targets[0]
+                    history["comparison"] = comparison
+
+            rc = run_mode(mode, label, args.config, history, comparison, targets)
             history["mode"] = mode
             save_history(history)
             default_choice = choice

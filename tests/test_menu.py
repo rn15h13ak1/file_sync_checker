@@ -362,3 +362,100 @@ class TestComparisonSelection:
         (reports / "sync-check-設計-20260102-090000.html").write_text("b", encoding="utf-8")
         got = menu.latest_report(cfg, "契約書")
         assert got is not None and "契約書" in got.name
+
+
+class TestRunTargetSelection:
+    """実行時の対象選択 (1 つ選ぶ / すべて実行)。"""
+
+    def test_single_comparison_skips_the_prompt(self, tmp_path, monkeypatch):
+        """比較が 1 組だけなら選択を挟まない (従来形式を含む)。"""
+        def boom(*a, **k):
+            raise AssertionError("選択画面を出してはいけない")
+
+        monkeypatch.setattr(menu, "print_menu", boom)
+        assert menu.select_run_targets(str(_write_config(tmp_path)), "") == [""]
+
+    def test_picking_one_returns_that_name(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda *a: "2")
+        assert menu.select_run_targets(str(_write_multi_config(tmp_path)), "") == ["設計"]
+        capsys.readouterr()
+
+    def test_last_item_runs_everything(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda *a: "3")   # すべて実行
+        got = menu.select_run_targets(str(_write_multi_config(tmp_path)), "")
+        assert got == ["契約書", "設計"]
+        capsys.readouterr()
+
+    def test_back_returns_none(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda *a: "0")
+        assert menu.select_run_targets(str(_write_multi_config(tmp_path)), "") is None
+        capsys.readouterr()
+
+    def test_current_selection_is_the_default(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda *a: "")    # Enter
+        got = menu.select_run_targets(str(_write_multi_config(tmp_path)), "設計")
+        assert got == ["設計"]
+        capsys.readouterr()
+
+
+class TestRunTargets:
+    def _spy(self, monkeypatch, codes):
+        calls = []
+        it = iter(codes)
+
+        def fake(args):
+            calls.append(args)
+            return next(it)
+
+        monkeypatch.setattr(menu, "run_checker", fake)
+        return calls
+
+    def test_runs_each_comparison_in_order(self, monkeypatch, capsys):
+        calls = self._spy(monkeypatch, [0, 0])
+        menu.run_targets("c.yaml", ["契約書", "設計"])
+        capsys.readouterr()
+        assert [a[a.index("--comparison") + 1] for a in calls] == ["契約書", "設計"]
+
+    def test_returns_the_worst_exit_code(self, monkeypatch, capsys):
+        """1 件でも重い結果があれば、それを代表として返す。"""
+        self._spy(monkeypatch, [0, 1, 3])
+        assert menu.run_targets("c.yaml", ["a", "b", "c"]) == 3
+        capsys.readouterr()
+
+    def test_keeps_going_after_a_failure(self, monkeypatch, capsys):
+        """1 件失敗しても残りは実行する (後続を確認できないと困る)。"""
+        calls = self._spy(monkeypatch, [3, 0, 0])
+        menu.run_targets("c.yaml", ["a", "b", "c"])
+        capsys.readouterr()
+        assert len(calls) == 3
+
+    def test_stops_on_interruption(self, monkeypatch, capsys):
+        calls = self._spy(monkeypatch, [130, 0])
+        assert menu.run_targets("c.yaml", ["a", "b"]) == 130
+        assert len(calls) == 1
+        assert "残りの比較は実行しません" in capsys.readouterr().out
+
+    def test_shows_a_summary_for_multiple_targets(self, monkeypatch, capsys):
+        self._spy(monkeypatch, [0, 1])
+        menu.run_targets("c.yaml", ["契約書", "設計"])
+        out = capsys.readouterr().out
+        assert "実行結果" in out
+        assert "契約書" in out and "設計" in out
+
+    def test_no_summary_for_a_single_target(self, monkeypatch, capsys):
+        self._spy(monkeypatch, [0])
+        menu.run_targets("c.yaml", ["契約書"])
+        assert "実行結果" not in capsys.readouterr().out
+
+
+class TestWorstExitCode:
+    @pytest.mark.parametrize("codes, expected", [
+        ([0, 0], 0),
+        ([0, 1], 1),
+        ([1, 3], 3),          # 読み取りエラーは差分より重い
+        ([3, 4], 4),
+        ([1, 130], 130),      # 中断が最も重い
+        ([], 0),
+    ])
+    def test_severity_order(self, codes, expected):
+        assert menu.worst_exit_code(codes) == expected
