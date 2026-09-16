@@ -452,3 +452,131 @@ output:
         config = load_config(cfg)
         assert config.locations[0].path == Path("/opt/absolute/a")
         assert config.output.output_dir == Path("/var/reports")
+
+
+class TestComparisons:
+    """複数の比較を定義する `comparisons:` 形式。"""
+
+    def _write(self, tmp_path: Path, body: str) -> Path:
+        for d in ("a", "b", "c", "d"):
+            (tmp_path / d).mkdir(exist_ok=True)
+        return _write(tmp_path / "c.yaml", body)
+
+    def _two(self, tmp_path: Path) -> Path:
+        return self._write(tmp_path, f"""
+comparisons:
+  契約書:
+    - {{name: 本社, path: {tmp_path}/a}}
+    - {{name: 大阪, path: {tmp_path}/b}}
+  設計:
+    - {{name: 本社, path: {tmp_path}/c}}
+    - {{name: 大阪, path: {tmp_path}/d}}
+""")
+
+    def test_legacy_locations_still_work(self, tmp_path: Path):
+        """従来形式はそのまま動く (既に配布済みのため)。"""
+        cfg = self._write(tmp_path, f"""
+locations:
+  - {{name: A, path: {tmp_path}/a}}
+  - {{name: B, path: {tmp_path}/b}}
+""")
+        config = load_config(cfg)
+        assert config.selected == ""
+        assert config.comparison_names == []
+        assert [loc.name for loc in config.locations] == ["A", "B"]
+
+    def test_selects_the_named_comparison(self, tmp_path: Path):
+        config = load_config(self._two(tmp_path), comparison="設計")
+        assert config.selected == "設計"
+        assert config.locations[0].path == tmp_path / "c"
+
+    def test_lists_the_defined_names(self, tmp_path: Path):
+        config = load_config(self._two(tmp_path), comparison="契約書")
+        assert config.comparison_names == ["契約書", "設計"]
+
+    def test_omitting_the_name_errors_with_candidates(self, tmp_path: Path):
+        with pytest.raises(ConfigError, match="契約書, 設計"):
+            load_config(self._two(tmp_path))
+
+    def test_unknown_name_errors_with_candidates(self, tmp_path: Path):
+        with pytest.raises(ConfigError, match="経理"):
+            load_config(self._two(tmp_path), comparison="経理")
+
+    def test_single_comparison_needs_no_name(self, tmp_path: Path):
+        cfg = self._write(tmp_path, f"""
+comparisons:
+  契約書:
+    - {{name: A, path: {tmp_path}/a}}
+    - {{name: B, path: {tmp_path}/b}}
+""")
+        assert load_config(cfg).selected == "契約書"
+
+    def test_listing_does_not_require_a_selection(self, tmp_path: Path):
+        """一覧表示のために名前が要る、という状態を避ける。"""
+        config = load_config(self._two(tmp_path), require_selection=False)
+        assert config.comparison_names == ["契約書", "設計"]
+
+    def test_locations_and_comparisons_are_exclusive(self, tmp_path: Path):
+        cfg = self._write(tmp_path, f"""
+locations:
+  - {{name: A, path: {tmp_path}/a}}
+  - {{name: B, path: {tmp_path}/b}}
+comparisons:
+  x:
+    - {{name: A, path: {tmp_path}/c}}
+    - {{name: B, path: {tmp_path}/d}}
+""")
+        with pytest.raises(ConfigError, match="同時に指定できません"):
+            load_config(cfg)
+
+    def test_each_comparison_needs_two_locations(self, tmp_path: Path):
+        cfg = self._write(tmp_path, f"""
+comparisons:
+  x:
+    - {{name: A, path: {tmp_path}/a}}
+""")
+        with pytest.raises(ConfigError, match="comparisons.x"):
+            load_config(cfg, comparison="x")
+
+    def test_duplicate_paths_are_rejected_within_a_comparison(self, tmp_path: Path):
+        cfg = self._write(tmp_path, f"""
+comparisons:
+  x:
+    - {{name: A, path: {tmp_path}/a}}
+    - {{name: B, path: {tmp_path}/a}}
+""")
+        with pytest.raises(ConfigError, match="重複"):
+            load_config(cfg, comparison="x")
+
+    def test_same_path_may_appear_in_different_comparisons(self, tmp_path: Path):
+        """比較をまたいで同じ拠点を使うのは正当なので弾かない。"""
+        cfg = self._write(tmp_path, f"""
+comparisons:
+  x:
+    - {{name: A, path: {tmp_path}/a}}
+    - {{name: B, path: {tmp_path}/b}}
+  y:
+    - {{name: A, path: {tmp_path}/a}}
+    - {{name: C, path: {tmp_path}/c}}
+""")
+        assert load_config(cfg, comparison="y").locations[0].path == tmp_path / "a"
+
+    @pytest.mark.parametrize("name", ["a/b", "a:b", "a*b", "a?b", 'a"b', "a<b", "a|b"])
+    def test_names_with_filename_unsafe_characters_are_rejected(
+        self, tmp_path: Path, name: str
+    ):
+        """比較名はレポートのファイル名に入るため、使えない文字を弾く。"""
+        # 名前は YAML のシングルクォートで囲む (ダブルクォートを含む名前も試すため)
+        cfg = self._write(tmp_path, f"""
+comparisons:
+  '{name}':
+    - {{name: A, path: {tmp_path}/a}}
+    - {{name: B, path: {tmp_path}/b}}
+""")
+        with pytest.raises(ConfigError, match="使えない文字"):
+            load_config(cfg, comparison=name)
+
+    def test_empty_comparisons_is_rejected(self, tmp_path: Path):
+        cfg = self._write(tmp_path, "comparisons: {}\n")
+        with pytest.raises(ConfigError, match="comparisons"):
+            load_config(cfg)

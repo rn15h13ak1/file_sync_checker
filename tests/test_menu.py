@@ -275,3 +275,90 @@ class TestLaunch:
         )
         assert r.returncode == menu.EXIT_EOF
         assert "Traceback" not in r.stderr
+
+
+# ============================================================
+# 比較対象の選択
+# ============================================================
+def _write_multi_config(tmp_path: Path) -> Path:
+    for d in ("a", "b", "c", "d"):
+        (tmp_path / d).mkdir(exist_ok=True)
+    cfg = tmp_path / "multi.yaml"
+    cfg.write_text(yaml.safe_dump({
+        "comparisons": {
+            "契約書": [{"name": "本社", "path": str(tmp_path / "a")},
+                       {"name": "大阪", "path": str(tmp_path / "b")}],
+            "設計": [{"name": "本社", "path": str(tmp_path / "c")},
+                     {"name": "大阪", "path": str(tmp_path / "d")}],
+        },
+        "output": {"format": "html", "output_dir": str(tmp_path / "reports")},
+    }, allow_unicode=True), encoding="utf-8")
+    return cfg
+
+
+class TestComparisonSelection:
+    def test_lists_defined_comparisons(self, tmp_path):
+        assert menu.list_comparisons(str(_write_multi_config(tmp_path))) == ["契約書", "設計"]
+
+    def test_legacy_config_has_no_comparisons(self, tmp_path):
+        assert menu.list_comparisons(str(_write_config(tmp_path))) == []
+
+    def test_unreadable_config_has_no_comparisons(self, tmp_path):
+        assert menu.list_comparisons(str(tmp_path / "none.yaml")) == []
+
+    def test_header_shows_the_selected_comparison(self, tmp_path):
+        cfg = str(_write_multi_config(tmp_path))
+        assert menu.describe_targets(cfg, "設計") == "[設計] 本社 / 大阪 (2 拠点)"
+
+    def test_header_without_comparison_is_unchanged(self, tmp_path):
+        """従来形式では比較名を出さない。"""
+        assert menu.describe_targets(str(_write_config(tmp_path))) == "本社 / 大阪 (2 拠点)"
+
+    def test_choose_returns_the_picked_name(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda *a: "2")
+        assert menu.choose_comparison(str(_write_multi_config(tmp_path)), "契約書") == "設計"
+        capsys.readouterr()
+
+    def test_choose_defaults_to_the_current_one(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda *a: "")   # Enter
+        assert menu.choose_comparison(str(_write_multi_config(tmp_path)), "設計") == "設計"
+        capsys.readouterr()
+
+    def test_choose_back_returns_none(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda *a: "0")
+        assert menu.choose_comparison(str(_write_multi_config(tmp_path)), "") is None
+        capsys.readouterr()
+
+    def test_choose_explains_when_there_is_nothing_to_switch(self, tmp_path, capsys):
+        assert menu.choose_comparison(str(_write_config(tmp_path)), "") is None
+        assert "1 組しかありません" in capsys.readouterr().out
+
+    def test_switch_item_only_appears_with_multiple_comparisons(self, tmp_path):
+        multi = menu.available_modes(str(_write_multi_config(tmp_path)))
+        single = menu.available_modes(str(_write_config(tmp_path)))
+        assert menu.MODE_SWITCH in [m[0] for m in multi]
+        assert menu.MODE_SWITCH not in [m[0] for m in single]
+
+    def test_initial_comparison_uses_history_when_valid(self, tmp_path):
+        cfg = str(_write_multi_config(tmp_path))
+        assert menu.initial_comparison(cfg, {"comparison": "設計"}) == "設計"
+
+    def test_initial_comparison_falls_back_when_history_is_stale(self, tmp_path):
+        """設定から消えた比較が履歴に残っていても、先頭にフォールバックする。"""
+        cfg = str(_write_multi_config(tmp_path))
+        assert menu.initial_comparison(cfg, {"comparison": "経理"}) == "契約書"
+
+    def test_initial_comparison_is_empty_for_legacy_config(self, tmp_path):
+        assert menu.initial_comparison(str(_write_config(tmp_path)), {}) == ""
+
+    def test_build_args_passes_the_comparison(self):
+        assert menu.build_args(comparison="設計") == ["--comparison", "設計"]
+
+    def test_latest_report_is_per_comparison(self, tmp_path):
+        cfg = str(_write_multi_config(tmp_path))
+        reports = tmp_path / "reports"
+        reports.mkdir()
+        (reports / "sync-check-契約書-20260101-090000.html").write_text("a", encoding="utf-8")
+        (reports / "sync-check-設計-20260102-090000.html").write_text("b", encoding="utf-8")
+        got = menu.latest_report(cfg, "契約書")
+        assert got is not None and "契約書" in got.name

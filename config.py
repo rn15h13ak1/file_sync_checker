@@ -55,14 +55,44 @@ class MatchingConfig:
 
 
 @dataclass(frozen=True)
-class Config:
+class Comparison:
+    """1 組の比較対象。
+
+    `name` が空文字なら、設定ファイルにトップレベルの `locations:` だけが
+    書かれている従来の形式 (名前の無い 1 組) を表す。
+    """
+
+    name: str
     locations: List[Location]
+
+
+@dataclass(frozen=True)
+class Config:
+    comparisons: List[Comparison]
+    # 実行対象として選ばれている比較の名前 (従来形式では空文字)
+    selected: str = ""
     exclude_patterns: List[str] = field(default_factory=list)
     matching: MatchingConfig = field(default_factory=MatchingConfig)
     output: OutputConfig = field(default_factory=lambda: OutputConfig("excel", Path("./reports")))
     performance: PerformanceConfig = field(
         default_factory=lambda: PerformanceConfig(4, "sha256")
     )
+
+    @property
+    def locations(self) -> List[Location]:
+        """選ばれている比較の拠点一覧。
+
+        比較対象が 1 組だけだった頃の呼び出し側をそのまま動かすための入口。
+        """
+        for c in self.comparisons:
+            if c.name == self.selected:
+                return c.locations
+        return self.comparisons[0].locations
+
+    @property
+    def comparison_names(self) -> List[str]:
+        """定義されている比較の名前。従来形式では空リスト。"""
+        return [c.name for c in self.comparisons if c.name]
 
 
 class ConfigError(ValueError):
@@ -123,7 +153,118 @@ def _resolve(p: Path, base: Path) -> Path:
     return p if p.is_absolute() else (base / p).resolve()
 
 
-def load_config(path: str | Path) -> Config:
+# 比較の名前に使えない文字。レポートのファイル名に含めるため、
+# パス区切りや Windows のファイル名で使えない文字を弾く。
+_INVALID_NAME_CHARS = set('\\/:*?"<>|')
+
+
+def _parse_locations(items, base_dir: Path, where: str) -> List[Location]:
+    """拠点の一覧を検証して組み立てる。`where` はエラーメッセージ用の位置。"""
+    if not items or not isinstance(items, list):
+        raise ConfigError(f"{where} は1件以上指定してください")
+
+    locations: List[Location] = []
+    seen_names: set[str] = set()
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ConfigError(f"{where}[{i}] が不正です")
+        name = item.get("name")
+        path = item.get("path")
+        if not name or not path:
+            raise ConfigError(f"{where}[{i}] は name と path が必須です")
+        if name in seen_names:
+            raise ConfigError(f"拠点名が重複しています: {name} ({where})")
+        # バックスラッシュ表記は YAML パース時に潰れて壊れることが多く、
+        # またコピー機能でのパス組み立てを単純化するためフォワードスラッシュに統一する。
+        path_str = str(path)
+        if "\\" in path_str:
+            raise ConfigError(
+                f"{where}[{i}].path にバックスラッシュが含まれています: {path_str!r}\n"
+                f"  → フォワードスラッシュで記述してください "
+                f"(例: '//server-a/share/docs')"
+            )
+        seen_names.add(name)
+        locations.append(Location(name=str(name), path=_resolve(Path(path_str), base_dir)))
+
+    if len(locations) < 2:
+        raise ConfigError(f"{where} は2件以上必要です")
+
+    # パス重複検出: 同じ実体パスを複数拠点として登録すると常に一致してしまうため弾く。
+    # 比較をまたいで同じパスを使うのは問題ないので、検査は 1 組の中だけで行う。
+    # os.path.normcase は Windows では大小無視・スラッシュ統一、UNIX では no-op。
+    seen_paths: Dict[str, str] = {}
+    for loc in locations:
+        key = os.path.normcase(os.path.normpath(str(loc.path)))
+        if key in seen_paths:
+            raise ConfigError(
+                f"拠点 '{loc.name}' のパスが拠点 '{seen_paths[key]}' と重複しています: "
+                f"{loc.path} ({where})"
+            )
+        seen_paths[key] = loc.name
+    return locations
+
+
+def _parse_comparisons(raw: dict, base_dir: Path) -> List[Comparison]:
+    """`comparisons:` または従来の `locations:` から比較の一覧を組み立てる。"""
+    comparisons_raw = raw.get("comparisons")
+    if comparisons_raw is None:
+        # 従来形式: トップレベルの locations だけ。名前の無い 1 組として扱う。
+        return [Comparison(name="", locations=_parse_locations(
+            raw.get("locations"), base_dir, "locations"))]
+
+    if raw.get("locations"):
+        raise ConfigError(
+            "comparisons と locations は同時に指定できません。\n"
+            "  → 比較を複数定義する場合は locations を comparisons の中に移してください"
+        )
+    if not isinstance(comparisons_raw, dict) or not comparisons_raw:
+        raise ConfigError(
+            "comparisons は「名前: 拠点の一覧」の形式で1件以上指定してください"
+        )
+
+    comparisons: List[Comparison] = []
+    for name, items in comparisons_raw.items():
+        label = str(name)
+        if not label.strip():
+            raise ConfigError("comparisons の名前が空です")
+        bad = sorted(_INVALID_NAME_CHARS & set(label))
+        if bad:
+            raise ConfigError(
+                f"比較の名前に使えない文字が含まれています: {label!r} ({''.join(bad)})\n"
+                f"  → レポートのファイル名に使うため、"
+                f"{''.join(sorted(_INVALID_NAME_CHARS))} は使えません"
+            )
+        comparisons.append(Comparison(
+            name=label,
+            locations=_parse_locations(items, base_dir, f"comparisons.{label}"),
+        ))
+    return comparisons
+
+
+def _select_comparison(comparisons: List[Comparison], requested: str | None) -> str:
+    """実行対象の比較を決める。見つからなければ候補を添えてエラーにする。"""
+    names = [c.name for c in comparisons if c.name]
+    if requested:
+        if requested not in names:
+            raise ConfigError(
+                f"比較 '{requested}' は設定にありません。\n"
+                f"  → 定義されているのは: {', '.join(names) if names else '(名前なし)'}"
+            )
+        return requested
+    if len(comparisons) == 1:
+        return comparisons[0].name
+    raise ConfigError(
+        "比較対象を指定してください (--comparison NAME)。\n"
+        f"  → 定義されているのは: {', '.join(names)}"
+    )
+
+
+def load_config(
+    path: str | Path,
+    comparison: str | None = None,
+    *,
+    require_selection: bool = True,
+) -> Config:
     config_path = Path(path).resolve()
     if not config_path.is_file():
         raise ConfigError(f"設定ファイルが見つかりません: {config_path}")
@@ -133,46 +274,12 @@ def load_config(path: str | Path) -> Config:
     with config_path.open("r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
 
-    locations_raw = raw.get("locations")
-    if not locations_raw or not isinstance(locations_raw, list):
-        raise ConfigError("locations は1件以上指定してください")
-
-    locations: List[Location] = []
-    seen_names: set[str] = set()
-    for i, item in enumerate(locations_raw):
-        if not isinstance(item, dict):
-            raise ConfigError(f"locations[{i}] が不正です")
-        name = item.get("name")
-        path = item.get("path")
-        if not name or not path:
-            raise ConfigError(f"locations[{i}] は name と path が必須です")
-        if name in seen_names:
-            raise ConfigError(f"拠点名が重複しています: {name}")
-        # バックスラッシュ表記は YAML パース時に潰れて壊れることが多く、
-        # またコピー機能でのパス組み立てを単純化するためフォワードスラッシュに統一する。
-        path_str = str(path)
-        if "\\" in path_str:
-            raise ConfigError(
-                f"locations[{i}].path にバックスラッシュが含まれています: {path_str!r}\n"
-                f"  → フォワードスラッシュで記述してください "
-                f"(例: '//server-a/share/docs')"
-            )
-        seen_names.add(name)
-        locations.append(Location(name=str(name), path=_resolve(Path(path_str), base_dir)))
-
-    if len(locations) < 2:
-        raise ConfigError("locations は2件以上必要です")
-
-    # パス重複検出: 同じ実体パスを複数拠点として登録すると常に一致してしまうため弾く。
-    # os.path.normcase は Windows では大小無視・スラッシュ統一、UNIX では no-op。
-    seen_paths: Dict[str, str] = {}
-    for loc in locations:
-        key = os.path.normcase(os.path.normpath(str(loc.path)))
-        if key in seen_paths:
-            raise ConfigError(
-                f"拠点 '{loc.name}' のパスが拠点 '{seen_paths[key]}' と重複しています: {loc.path}"
-            )
-        seen_paths[key] = loc.name
+    comparisons = _parse_comparisons(raw, base_dir)
+    # 一覧表示のときは選択を求めない (名前を知るために名前が要る状態を避ける)
+    selected = (
+        _select_comparison(comparisons, comparison) if require_selection
+        else (comparison or "")
+    )
 
     exclude_patterns = raw.get("exclude_patterns") or []
     if not isinstance(exclude_patterns, list):
@@ -237,7 +344,8 @@ def load_config(path: str | Path) -> Config:
     )
 
     return Config(
-        locations=locations,
+        comparisons=comparisons,
+        selected=selected,
         exclude_patterns=exclude_patterns,
         matching=matching,
         output=output,

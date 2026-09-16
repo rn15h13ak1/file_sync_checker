@@ -60,6 +60,14 @@ def parse_args() -> argparse.Namespace:
         help="ハッシュ計算範囲を上書き (設定: performance.hash_mode)",
     )
     parser.add_argument(
+        "--comparison", default=None, metavar="NAME",
+        help="実行する比較の名前 (設定: comparisons)。省略時は1件だけなら自動で選ぶ",
+    )
+    parser.add_argument(
+        "--list-comparisons", action="store_true",
+        help="設定に定義されている比較の名前を一覧表示して終了する",
+    )
+    parser.add_argument(
         "--retry", type=int, default=0, metavar="N",
         help="読み取りに失敗したファイルを N 回まで再試行する "
              "(既定: 0 = 再試行しない)。ネットワークの瞬断や一時的なロック向け",
@@ -102,18 +110,21 @@ def _write_latest_alias(src: Path, dst: Path) -> Path:
 # このツールが出力したタイムスタンプ付きレポートだけを表す。
 # 削除対象を誤らないよう、桁数まで含めて厳密に一致させる。
 # 固定名の sync-check.html (最新への安定リンク) はこれに一致しないので消えない。
-_REPORT_NAME_RE = re.compile(r"^sync-check-(\d{8}-\d{6})\.(?:html|xlsx)$")
+_REPORT_NAME_RE = re.compile(
+    r"^sync-check(?:-(?P<name>.+?))?-(?P<slug>\d{8}-\d{6})\.(?:html|xlsx)$"
+)
 
 
-def _prune_old_reports(out_dir: Path, keep: int, log) -> None:
+def _prune_old_reports(out_dir: Path, keep: int, log, comparison: str = "") -> None:
     """古いレポートを削除し、直近 `keep` 回分だけ残す。
 
     定期実行では出力ディレクトリにレポートが際限なく溜まる
     (大きい共有だと HTML 22MB + Excel 3MB で年間 9GB 規模)。
 
     削除は元に戻せないため、次の条件をすべて満たすファイルだけを対象にする:
-      - このツールの命名規則 `sync-check-YYYYMMDD-HHMMSS.{html,xlsx}` に完全一致
+      - このツールの命名規則 `sync-check[-比較名]-YYYYMMDD-HHMMSS.{html,xlsx}` に完全一致
       - 出力ディレクトリ直下の通常ファイル
+      - 今回実行した比較のレポート (別の比較のレポートには触れない)
     「実行回数」で数えるので、1 回の実行が html と xlsx を出していれば
     それらは 1 回分として扱う。削除に失敗しても実行自体は成功させる
     (レポートは既に書けており、後片付けの失敗で終了コードを変えない)。
@@ -126,8 +137,10 @@ def _prune_old_reports(out_dir: Path, keep: int, log) -> None:
         if not path.is_file():
             continue
         m = _REPORT_NAME_RE.match(path.name)
-        if m:
-            runs.setdefault(m.group(1), []).append(path)
+        # 比較ごとに keep 回分を残す。まとめて数えると、複数の比較を回したときに
+        # 互いのレポートを消し合ってしまう。
+        if m and (m.group("name") or "") == comparison:
+            runs.setdefault(m.group("slug"), []).append(path)
 
     # タイムスタンプの新しい順に keep 回分を残す (ファイル名がそのまま時系列)
     for slug in sorted(runs, reverse=True)[keep:]:
@@ -143,6 +156,8 @@ def run(
     config: Config, config_path: Path, *, show_progress: bool, log, retry: int = 0
 ) -> int:
     started_at = datetime.now()
+    if config.selected:
+        log.info("比較: %s", config.selected)
     log.info("スキャン開始: %d 拠点", len(config.locations))
 
     for loc in config.locations:
@@ -180,6 +195,9 @@ def run(
     finished_at = datetime.now()
 
     out_dir = ensure_dir(config.output.output_dir)
+    # 比較が複数ある場合、レポートが互いを上書きしないよう名前を挟む。
+    # 従来形式 (名前なし) では従来どおりのファイル名にする。
+    prefix = f"sync-check-{config.selected}" if config.selected else "sync-check"
     slug = timestamp_slug(started_at)
     ctx = ReportContext(
         started_at=started_at,
@@ -198,25 +216,26 @@ def run(
             case_sensitive=config.matching.case_sensitive,
             retry=retry,
             max_table_rows=config.output.max_table_rows,
+            comparison=config.selected,
         ),
     )
 
     written = []
     fmt = config.output.format
     if fmt in ("excel", "both"):
-        out_xlsx = out_dir / f"sync-check-{slug}.xlsx"
+        out_xlsx = out_dir / f"{prefix}-{slug}.xlsx"
         write_excel(ctx, out_xlsx)
         written.append(out_xlsx)
     if fmt in ("html", "both"):
-        out_html = out_dir / f"sync-check-{slug}.html"
+        out_html = out_dir / f"{prefix}-{slug}.html"
         write_html(ctx, out_html)
         written.append(out_html)
         # 安定リンク用: タイムスタンプ無しの最新レポートを上書きで生成する
         # (ブックマークや自動化スクリプトから常に最新を参照できるようにするため)
-        written.append(_write_latest_alias(out_html, out_dir / "sync-check.html"))
+        written.append(_write_latest_alias(out_html, out_dir / f"{prefix}.html"))
 
     # 新しいレポートを書いた後に、古い分を片付ける
-    _prune_old_reports(out_dir, config.output.keep_reports, log)
+    _prune_old_reports(out_dir, config.output.keep_reports, log, config.selected)
 
     # コンソールサマリー
     elapsed = (finished_at - started_at).total_seconds()
@@ -263,7 +282,11 @@ def main() -> int:
     config_path = Path(args.config) if args.config else _resolve_default_config()
     try:
         config = apply_overrides(
-            load_config(config_path),
+            load_config(
+                config_path,
+                comparison=args.comparison,
+                require_selection=not args.list_comparisons,
+            ),
             output_format=args.output_format,
             output_dir=args.output_dir,
             hash_mode=args.hash_mode,
@@ -274,6 +297,11 @@ def main() -> int:
     except Exception as e:  # YAML パースエラー等
         log.error("設定ファイル読み込み失敗: %s", e)
         return EXIT_CONFIG_ERROR
+
+    if args.list_comparisons:
+        names = config.comparison_names
+        print("\n".join(names) if names else "(比較名なし: locations 形式)")
+        return EXIT_OK
 
     # 進捗バーは端末に出しているときだけ表示する。
     # cron などで stderr をファイルに落としていると、tqdm の更新が

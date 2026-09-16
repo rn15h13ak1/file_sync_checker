@@ -83,7 +83,10 @@ def _condition_rows(ctx: "ReportContext") -> List[tuple]:
     else:
         mode = "always — 全ファイルの内容を読んで照合"
 
-    rows = [
+    rows = []
+    if s.comparison:
+        rows.append(("比較", s.comparison))
+    rows += [
         ("ハッシュ方式", f"{s.hash_algorithm} / {mode}"),
         ("ハッシュ省略件数", f"{sum(sc.skipped_hashes for sc in ctx.scans):,} 件"),
     ]
@@ -182,6 +185,8 @@ class ReportSettings:
     normalize_unicode: bool
     case_sensitive: bool
     retry: int = 0
+    # 実行した比較の名前 (設定に comparisons がある場合)
+    comparison: str = ""
     # HTML の 1 表あたりの最大行数。0 は無制限。Excel には適用しない
     # (全件を確認する手段として Excel を残すため)。
     max_table_rows: int = 0

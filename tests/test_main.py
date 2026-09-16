@@ -525,3 +525,106 @@ class TestHtmlAliasOutput:
 
         assert second_content != first_content
         assert second_mtime >= first_mtime
+
+
+class TestComparisonReports:
+    """複数の比較を定義したときのレポート名と削除範囲。"""
+
+    def _write_multi_config(self, tmp_path: Path) -> Path:
+        for d in ("a", "b", "c", "d"):
+            loc = tmp_path / d
+            loc.mkdir()
+            (loc / "shared.txt").write_text("data", encoding="utf-8")
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(yaml.safe_dump({
+            "comparisons": {
+                "契約書": [{"name": "本社", "path": str(tmp_path / "a")},
+                           {"name": "大阪", "path": str(tmp_path / "b")}],
+                "設計": [{"name": "本社", "path": str(tmp_path / "c")},
+                         {"name": "大阪", "path": str(tmp_path / "d")}],
+            },
+            "output": {"format": "both", "output_dir": str(tmp_path / "reports")},
+        }, allow_unicode=True), encoding="utf-8")
+        return cfg
+
+    def test_report_name_includes_the_comparison(self, tmp_path, capsys):
+        cfg = self._write_multi_config(tmp_path)
+        run(load_config(cfg, comparison="契約書"), cfg,
+            show_progress=False, log=_silent_logger())
+        capsys.readouterr()
+
+        names = sorted(p.name for p in (tmp_path / "reports").iterdir())
+        assert any(n.startswith("sync-check-契約書-") for n in names), names
+        # 固定名も比較ごとに分かれる
+        assert "sync-check-契約書.html" in names
+
+    def test_comparisons_do_not_overwrite_each_other(self, tmp_path, capsys):
+        cfg = self._write_multi_config(tmp_path)
+        for name in ("契約書", "設計"):
+            run(load_config(cfg, comparison=name), cfg,
+                show_progress=False, log=_silent_logger())
+            capsys.readouterr()
+
+        names = {p.name for p in (tmp_path / "reports").iterdir()}
+        assert "sync-check-契約書.html" in names
+        assert "sync-check-設計.html" in names
+
+    def test_pruning_is_per_comparison(self, tmp_path, capsys):
+        """比較ごとに keep 回分を残す (互いのレポートを消し合わない)。"""
+        from main import _prune_old_reports
+
+        out = tmp_path / "reports"
+        out.mkdir()
+        for name in ("契約書", "設計"):
+            for slug in ("20260101-090000", "20260102-090000", "20260103-090000"):
+                (out / f"sync-check-{name}-{slug}.html").write_text("x", encoding="utf-8")
+
+        _prune_old_reports(out, keep=1, log=_silent_logger(), comparison="契約書")
+
+        remaining = sorted(p.name for p in out.iterdir())
+        # 契約書は直近1回分だけ、設計は手つかず
+        assert remaining == [
+            "sync-check-契約書-20260103-090000.html",
+            "sync-check-設計-20260101-090000.html",
+            "sync-check-設計-20260102-090000.html",
+            "sync-check-設計-20260103-090000.html",
+        ]
+
+    def test_pruning_unnamed_ignores_named_reports(self, tmp_path):
+        """従来形式の実行は、名前付きレポートに触れない。"""
+        from main import _prune_old_reports
+
+        out = tmp_path / "reports"
+        out.mkdir()
+        for slug in ("20260101-090000", "20260102-090000"):
+            (out / f"sync-check-{slug}.html").write_text("x", encoding="utf-8")
+        (out / "sync-check-契約書-20260101-090000.html").write_text("x", encoding="utf-8")
+
+        _prune_old_reports(out, keep=1, log=_silent_logger(), comparison="")
+
+        remaining = sorted(p.name for p in out.iterdir())
+        assert remaining == [
+            "sync-check-20260102-090000.html",
+            "sync-check-契約書-20260101-090000.html",
+        ]
+
+    def test_comparison_is_recorded_in_the_report(self, tmp_path, capsys):
+        cfg = self._write_multi_config(tmp_path)
+        run(load_config(cfg, comparison="設計"), cfg,
+            show_progress=False, log=_silent_logger())
+        capsys.readouterr()
+
+        html = (tmp_path / "reports" / "sync-check-設計.html").read_text(encoding="utf-8")
+        conditions = html.split("<h3>実行条件</h3>")[1].split("</table>")[0]
+        assert "設計" in conditions
+
+    def test_list_comparisons_exits_without_scanning(self, tmp_path, monkeypatch, capsys):
+        import main as main_mod
+
+        cfg = self._write_multi_config(tmp_path)
+        monkeypatch.setattr(sys, "argv",
+                            ["main.py", "-c", str(cfg), "--list-comparisons"])
+        assert main_mod.main() == EXIT_OK
+        out = capsys.readouterr().out
+        assert "契約書" in out and "設計" in out
+        assert not (tmp_path / "reports").exists()
