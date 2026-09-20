@@ -20,11 +20,27 @@ tests/__pycache__/
 htmlcov/
 .mypy_cache/
 
-# OS
+# OS / エディタ
 .DS_Store
 Thumbs.db
-
-# IDE
 .vscode/
 .idea/
+.claude/
 *.swp
+*~
+
+# mac-watcher トリガー・ログ
+.build-trigger
+.build-output.log
+.git-trigger
+.git-output.log
+.github-trigger
+
+# 資格情報
+.env
+.env.*
+secrets.yaml
+credentials*
+*.pem
+*.key
+*.local.yaml

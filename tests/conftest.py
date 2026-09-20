@@ -46,7 +46,7 @@ def make_scan(
     file_errors = file_errors or {}
     return ScanResult(
         location_name=name,
-        root=root or Path("/tmp/dummy"),
+        root=root or Path("/mnt/dummy"),
         files=files,
         dirs=dirs or {},
         errors=errors or [],

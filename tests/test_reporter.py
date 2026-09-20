@@ -49,12 +49,12 @@ class TestLooksWindows:
         assert _looks_windows("\\\\server\\share\\docs") is True
 
     def test_drive_letter(self):
-        assert _looks_windows("C:/Users/foo") is True
+        assert _looks_windows("C:/work/foo") is True
         assert _looks_windows("D:") is True
 
     def test_unix_path(self):
         assert _looks_windows("/mnt/share/docs") is False
-        assert _looks_windows("/Users/foo") is False
+        assert _looks_windows("/srv/foo") is False
 
     def test_relative_path(self):
         assert _looks_windows("relative/path") is False
@@ -78,9 +78,9 @@ class TestBuildPaths:
         assert folder == "/mnt/data/sub"
 
     def test_drive_letter_root(self):
-        full, folder = _build_paths("C:/Users/foo", "docs/file.txt")
-        assert full == "C:\\Users\\foo\\docs\\file.txt"
-        assert folder == "C:\\Users\\foo\\docs"
+        full, folder = _build_paths("C:/work/foo", "docs/file.txt")
+        assert full == "C:\\work\\foo\\docs\\file.txt"
+        assert folder == "C:\\work\\foo\\docs"
 
     def test_trailing_separator_stripped(self):
         """ルートの末尾セパレータがあっても二重にならない。"""
@@ -596,12 +596,12 @@ class TestHtml:
         """フルパスは JS が root + sep + relpath で組み立てるため、
         正規化済みルートとセパレータが拠点ごとに 1 回だけ入る。
 
-        rich_ctx の拠点ルートは make_scan のデフォルト '/tmp/dummy' のため UNIX 形式。
+        rich_ctx の拠点ルートは make_scan のデフォルト '/mnt/dummy' のため UNIX 形式。
         """
         data = _extract_report_data(write_html(rich_ctx, tmp_path / "out.html"))
         assert [loc["name"] for loc in data["locations"]] == ["拠点A", "拠点B", "拠点C"]
         for loc in data["locations"]:
-            assert loc["root"] == "/tmp/dummy"
+            assert loc["root"] == "/mnt/dummy"
             assert loc["sep"] == "/"
 
     def test_report_data_records_entries_and_errors(
