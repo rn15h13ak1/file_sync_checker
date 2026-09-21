@@ -577,7 +577,7 @@ file_sync_checker/
 
 ```bash
 pip install -r requirements-dev.txt
-pytest          # 412 テストケース
+pytest          # 413 テストケース
 pytest -v       # 詳細出力
 pytest -k mino  # 特定の名前のテストだけ
 ```

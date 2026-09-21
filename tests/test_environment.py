@@ -99,11 +99,24 @@ class TestPython39Annotations:
         assert len(self._pep604_annotations(tree)) == 2
 
 
-@pytest.fixture
-def without_tqdm(tmp_path: Path):
-    """tqdm を import できない状態で子プロセスを起動する env を返す。"""
+#: 本ツールの依存。**1 つずつ確かめる。**
+#: まとめて落とすと、最初に import されるものだけで通ってしまい、
+#: 他が包まれていない状態を見逃す。
+DEPENDENCIES = ("yaml", "tqdm", "openpyxl")
+
+
+def _env_without(tmp_path: Path, module: str) -> dict:
+    """指定したモジュールを import できない状態の env を組み立てる。
+
+    **モジュールごとにディレクトリを分ける。** 同じ場所へ上書きすると、
+    Python が `__pycache__` の `.pyc` を使い回して細工が入れ替わらない
+    ことがある (mtime と size で判定するため、`yaml` → `tqdm` のように
+    同じ長さの名前だと、同じ秒に書いた 2 つを区別できない)。
+    """
+    tmp_path = tmp_path / module
+    tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "sitecustomize.py").write_text(
-        BLOCKER.format(blocked="tqdm"), encoding="utf-8"
+        BLOCKER.format(blocked=module), encoding="utf-8"
     )
     env = dict(os.environ)
     existing = env.get("PYTHONPATH")
@@ -111,6 +124,11 @@ def without_tqdm(tmp_path: Path):
         f"{tmp_path}{os.pathsep}{existing}" if existing else str(tmp_path)
     )
     return env
+
+
+@pytest.fixture
+def without_tqdm(tmp_path: Path):
+    return _env_without(tmp_path, "tqdm")
 
 
 class TestMissingDependency:
@@ -136,18 +154,40 @@ class TestMissingDependency:
         assert r.returncode != 0
         assert "tqdm" in r.stderr
 
-    @pytest.mark.parametrize("script", ["main.py", "menu.py"])
-    def test_exit_code_is_not_the_diff_code(self, script: str, without_tqdm):
-        r = self._run(script, without_tqdm)
-        assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    @pytest.mark.parametrize("module", DEPENDENCIES)
+    def test_main_handles_every_dependency(self, module: str, tmp_path: Path):
+        """**依存ごとに 1 つずつ確かめる。**
 
-    @pytest.mark.parametrize("script", ["main.py", "menu.py"])
-    def test_shows_what_to_do_instead_of_a_traceback(self, script: str, without_tqdm):
-        r = self._run(script, without_tqdm)
+        まとめて落とすと、最初に import されるものだけで通ってしまう。
+        import の順序を変えたときに、包み忘れた依存を見逃さないため。
+        """
+        r = self._run("main.py", _env_without(tmp_path, module))
         out = r.stdout + r.stderr
+        assert r.returncode == 2, (r.returncode, out)
         assert "Traceback" not in out, out
-        assert "tqdm" in out
+        assert module in out
         assert "pip install -r requirements.txt" in out
+
+    def test_menu_handles_what_it_imports(self, tmp_path: Path):
+        """メニューが自分で import する依存 (yaml / tqdm) を案内すること。
+
+        openpyxl はメニューの起動経路に無い (`reporter` を import するのは
+        `main.py` だけ)。そのため openpyxl だけ欠けていてもメニューは開き、
+        チェックを実行した時点で本体側の案内が出る。**利用者には届く**ので
+        欠陥ではないが、届く経路が違うことをここに書き残す。
+        """
+        for module in ("yaml", "tqdm"):
+            r = self._run("menu.py", _env_without(tmp_path, module))
+            out = r.stdout + r.stderr
+            assert r.returncode == 2, (module, r.returncode, out)
+            assert "Traceback" not in out, out
+            assert module in out
+
+    def test_menu_opens_when_only_openpyxl_is_missing(self, tmp_path: Path):
+        """上記の裏取り。落ちるのではなく、普通に開くこと。"""
+        r = self._run("menu.py", _env_without(tmp_path, "openpyxl"))
+        assert "Traceback" not in r.stdout + r.stderr
+        assert "実行内容を選択" in r.stdout
 
     def test_main_names_the_interpreter(self, without_tqdm):
         """どの Python に入れればよいかが分かること。
