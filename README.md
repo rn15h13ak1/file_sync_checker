@@ -97,7 +97,8 @@ comparisons:
 ## 動作要件
 
 - **Python 3.9 以上**
-- 依存は **PyYAML / openpyxl / tqdm**
+- 依存は **PyYAML / openpyxl / tqdm**。入っていない Python で起動すると、
+  トレースバックではなく導入コマンドを表示して終了コード `2` で止まります
 - 各拠点に `//server/share/...` 形式（または `/Volumes/...` 等）でアクセスできること
 
 ```bash
@@ -515,7 +516,7 @@ output:
 | --- | --- |
 | `0` | 全拠点一致・エラーなし |
 | `1` | 差分を検出（スキャン自体は完走） |
-| `2` | 設定エラー |
+| `2` | 設定エラー、または依存ライブラリが入っていない |
 | `3` | 読み取りエラーあり（スキャンが不完全。差分の有無を問わずこちらが優先） |
 | `4` | 予期しないエラー（レポート生成失敗など。詳細はログのトレースバック） |
 | `130` | ユーザ中断 (Ctrl+C) |
@@ -566,7 +567,8 @@ file_sync_checker/
     ├── test_reporter.py      レポートの内容・サイズ・メモリ
     ├── test_utils.py         表示整形・ロギング
     ├── test_windows.py       Windows 対応（文字コード・改行・UNC パス）
-    └── test_backward_compat.py  配布済み設定（従来形式）が動き続けること
+    ├── test_backward_compat.py  配布済み設定（従来形式）が動き続けること
+    └── test_environment.py   動作要件（Python のバージョン・依存）どおりに起動できること
 ```
 
 ---
@@ -575,7 +577,7 @@ file_sync_checker/
 
 ```bash
 pip install -r requirements-dev.txt
-pytest          # 397 テストケース
+pytest          # 412 テストケース
 pytest -v       # 詳細出力
 pytest -k mino  # 特定の名前のテストだけ
 ```

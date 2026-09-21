@@ -11,6 +11,9 @@ CLI オプションを覚えなくても、番号を選ぶだけで実行でき�
 無人実行 (cron / タスクスケジューラ) はこのメニューではなく本体を直接呼ぶこと:
   python3 main.py --no-progress
 """
+# 注釈の `str | None` を Python 3.9 でも書けるようにする (PEP 563)。
+# 無いと def の時点で注釈が評価され、起動前に TypeError になる。
+from __future__ import annotations
 
 import argparse
 import json
@@ -54,7 +57,7 @@ MODES = [
 EXIT_MEANINGS = {
     0: "全拠点一致・エラーなし",
     1: "差分を検出 (スキャン自体は完走)",
-    2: "設定エラー",
+    2: "設定エラー / 依存ライブラリ不足",
     3: "読み取りエラーあり (スキャンが不完全)",
     4: "予期しないエラー",
     130: "中断",

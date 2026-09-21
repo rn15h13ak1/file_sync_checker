@@ -9,17 +9,29 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from config import (
-    SUPPORTED_FORMATS,
-    Config,
-    ConfigError,
-    apply_overrides,
-    load_config,
-)
-from comparator import compare
-from reporter import ReportContext, ReportSettings, write_excel, write_html
-from scanner import HASH_MODES, ScanCancelled, scan_locations
-from utils import ensure_dir, human_bytes, setup_logging, timestamp_slug
+try:
+    from config import (
+        SUPPORTED_FORMATS,
+        Config,
+        ConfigError,
+        apply_overrides,
+        load_config,
+    )
+    from comparator import compare
+    from reporter import ReportContext, ReportSettings, write_excel, write_html
+    from scanner import HASH_MODES, ScanCancelled, scan_locations
+    from utils import ensure_dir, human_bytes, setup_logging, timestamp_slug
+except ModuleNotFoundError as e:
+    # 依存が入っていない Python で起動された場合に、トレースバックのまま
+    # 終了コード 1 を返さない。1 は「差分あり」で、無人実行の通知では
+    # 「差分が出た」と読めてしまい、環境が壊れていることに気付けない。
+    if e.name not in ("yaml", "tqdm", "openpyxl"):
+        raise
+    print(f"必要なライブラリ {e.name} が入っていません。", file=sys.stderr)
+    print(f"実行中の Python: {sys.executable}", file=sys.stderr)
+    print("次のコマンドでインストールしてください:", file=sys.stderr)
+    print("    pip install -r requirements.txt", file=sys.stderr)
+    sys.exit(2)
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
